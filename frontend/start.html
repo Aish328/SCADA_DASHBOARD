@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>SCADA Intelligence Dashboard</title>
+
+  <!-- GOOGLE FONTS -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+
+  <link rel="preconnect"
+        href="https://fonts.gstatic.com"
+        crossorigin>
+
+  <link
+    href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap"
+    rel="stylesheet">
+
+  <!-- LEAFLET -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet/dist/leaflet.css" />
+
+  <!-- CHART.JS -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- CSS -->
+  <link rel="stylesheet" href="css/style.css">
+
+</head>
+
+<body>
+
+  <!-- =========================================
+       TOPBAR
+  ========================================== -->
+
+  <div class="topbar">
+
+    <div class="breadcrumb">
+      DASHBOARD ›
+      <span>SCADA CONTROL ROOM</span>
+    </div>
+
+    <div class="tb-right">
+
+      <div class="clock" id="clock"></div>
+
+      <input
+        class="search"
+        placeholder="Search..."
+        type="text">
+
+      <button
+        class="icon-btn"
+        id="refreshBtn">
+        ↻
+      </button>
+
+      <button class="icon-btn">
+        ⚙
+      </button>
+
+    </div>
+
+  </div>
+
+  <!-- =========================================
+       FILTER BAR
+  ========================================== -->
+
+  <div class="filterbar">
+
+    <!-- SUBSTATION -->
+
+    <div class="filter-group">
+
+      <div class="filter-label">
+        Substation
+      </div>
+
+      <select
+        class="filter-select"
+        id="substationSelect">
+      </select>
+
+    </div>
+
+    <div class="separator"></div>
+
+    <!-- FEEDERS -->
+
+    <div class="filter-group">
+
+      <div class="filter-label">
+        Feeders
+      </div>
+
+      <div
+        class="pill-group"
+        id="feederPills">
+      </div>
+
+    </div>
+
+    <div class="separator"></div>
+
+    <!-- DATE -->
+
+    <div class="filter-group">
+
+      <div class="filter-label">
+        Date Range
+      </div>
+
+      <select class="filter-select">
+
+        <option>
+          Last 12 Months
+        </option>
+
+        <option>
+          Last 6 Months
+        </option>
+
+        <option>
+          YTD
+        </option>
+
+      </select>
+
+    </div>
+
+  </div>
+
+  <!-- =========================================
+       MAIN CONTENT
+  ========================================== -->
+
+  <div class="main">
+
+    <!-- =====================================
+         TOP SECTION
+    ====================================== -->
+
+    <div class="top-row">
+
+      <!-- MAP -->
+
+      <div class="map-card">
+
+        <div class="card-header">
+
+          <div class="card-title">
+            Substation Map
+          </div>
+
+          <div class="live-badge">
+            LIVE
+          </div>
+
+        </div>
+
+        <div id="map"></div>
+
+      </div>
+
+      <!-- KPI STACK -->
+
+      <div class="kpi-stack">
+
+        <!-- ROW 1 -->
+
+        <div class="kpi-row">
+
+          <div class="tile">
+            <div class="tile-code">FVHI</div>
+            <div class="tile-value" id="fvhi">0</div>
+          </div>
+
+          <div class="tile">
+            <div class="tile-code">FVHD</div>
+            <div class="tile-value" id="fvhd">0</div>
+          </div>
+
+          <div class="tile">
+            <div class="tile-code">FVLI</div>
+            <div class="tile-value" id="fvli">0</div>
+          </div>
+
+          <div class="tile">
+            <div class="tile-code">FVLD</div>
+            <div class="tile-value" id="fvld">0</div>
+          </div>
+
+          <div class="tile">
+            <div class="tile-code">FVSM</div>
+            <div class="tile-value" id="fvsm">0</div>
+          </div>
+
+        </div>
+
+        <!-- ROW 2 -->
+
+        <div class="kpi-row">
+
+          <div class="tile">
+            <div class="tile-code">FCHI</div>
+            <div class="tile-value" id="fchi">0</div>
+          </div>
+
+          <div class="tile">
+            <div class="tile-code">FCHD</div>
+            <div class="tile-value" id="fchd">0</div>
+          </div>
+
+          <div class="tile">
+            <div class="tile-code">FCLI</div>
+            <div class="tile-value" id="fcli">0</div>
+          </div>
+
+          <div class="tile">
+            <div class="tile-code">FCLD</div>
+            <div class="tile-value" id="fcld">0</div>
+          </div>
+
+          <div class="tile">
+            <div class="tile-code">FCSM</div>
+            <div class="tile-value" id="fcsm">0</div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- =====================================
+         VOLTAGE SECTION
+    ====================================== -->
+
+    <div class="section-header">
+
+      <div class="section-tag">
+        Voltage Health KPIs
+      </div>
+
+      <div class="section-line"></div>
+
+    </div>
+
+    <div class="chart-grid">
+
+      <div class="chart-card">
+
+        <div class="chart-title">
+          FVHI — Feeder Voltage High Indicator
+        </div>
+
+        <div class="chart-wrap">
+          <canvas id="chart1"></canvas>
+        </div>
+
+      </div>
+
+      <div class="chart-card">
+
+        <div class="chart-title">
+          FVHD — Feeder Voltage High Duration
+        </div>
+
+        <div class="chart-wrap">
+          <canvas id="chart2"></canvas>
+        </div>
+
+      </div>
+
+      <div class="chart-card">
+
+        <div class="chart-title">
+          FVLI — Feeder Voltage Low Indicator
+        </div>
+
+        <div class="chart-wrap">
+          <canvas id="chart3"></canvas>
+        </div>
+
+      </div>
+
+      <div class="chart-card">
+
+        <div class="chart-title">
+          FVLD — Feeder Voltage Low Duration
+        </div>
+
+        <div class="chart-wrap">
+          <canvas id="chart4"></canvas>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- FULL TREND -->
+
+    <div class="full-chart">
+
+      <div class="chart-title">
+        Voltage Trend — Combined
+      </div>
+
+      <div class="chart-wrap large">
+        <canvas id="chart5"></canvas>
+      </div>
+
+    </div>
+
+    <!-- =====================================
+         CURRENT SECTION
+    ====================================== -->
+
+    <div class="section-header">
+
+      <div class="section-tag">
+        Current Health KPIs
+      </div>
+
+      <div class="section-line"></div>
+
+    </div>
+
+    <div class="chart-grid">
+
+      <div class="chart-card">
+
+        <div class="chart-title">
+          FCHI — Feeder Current High Indicator
+        </div>
+
+        <div class="chart-wrap">
+          <canvas id="chart6"></canvas>
+        </div>
+
+      </div>
+
+      <div class="chart-card">
+
+        <div class="chart-title">
+          FCHD — Feeder Current High Duration
+        </div>
+
+        <div class="chart-wrap">
+          <canvas id="chart7"></canvas>
+        </div>
+
+      </div>
+
+      <div class="chart-card">
+
+        <div class="chart-title">
+          FCLI — Feeder Current Low Indicator
+        </div>
+
+        <div class="chart-wrap">
+          <canvas id="chart8"></canvas>
+        </div>
+
+      </div>
+
+      <div class="chart-card">
+
+        <div class="chart-title">
+          FCLD — Feeder Current Low Duration
+        </div>
+
+        <div class="chart-wrap">
+          <canvas id="chart9"></canvas>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- FULL TREND -->
+
+    <div class="full-chart">
+
+      <div class="chart-title">
+        Current Trend — Combined
+      </div>
+
+      <div class="chart-wrap large">
+        <canvas id="chart10"></canvas>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- =========================================
+       SCRIPTS
+  ========================================== -->
+
+  <!-- LEAFLET -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <!-- LOCAL JS -->
+  <script src="js/api.js"></script>
+  <script src="js/map.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/ui.js"></script>
+
+</body>
+
+</html>
