@@ -1,143 +1,129 @@
-document.addEventListener("DOMContentLoaded",()=>{
+document.addEventListener("DOMContentLoaded", async () => {
 
-  const substationSelect =
-    document.getElementById("substationSelect");
+  const substationSelect = document.getElementById("substationSelect");
+  const feederPills = document.getElementById("feederPills");
+  let currentFilters = {
+    substation: null,
+    feeder: null
+  };
 
-  const feederPills =
-    document.getElementById("feederPills");
-
-  /* ------------------------
-     LOAD SUBSTATIONS
-  ------------------------ */
-
-  Object.keys(SCADA_DATA)
-    .forEach(city=>{
-
-      const option =
-        document.createElement("option");
-
-      option.value = city;
-      option.textContent = city;
-
+  /* ========================
+     LOAD FILTERS FROM BACKEND
+  ======================== */
+  async function loadFilters() {
+    const filters = await ApiService.getFilters();
+    
+    // Populate substations dropdown
+    substationSelect.innerHTML = '';
+    filters.substations.forEach(substation => {
+      const option = document.createElement("option");
+      option.value = substation;
+      option.textContent = substation;
       substationSelect.appendChild(option);
-
     });
 
-  /* ------------------------
-     UPDATE KPIs
-  ------------------------ */
-
-  function updateKpis(city){
-
-    const kpis =
-      SCADA_DATA[city].kpis;
-
-    Object.keys(kpis)
-      .forEach(key=>{
-
-        const el =
-          document.getElementById(key);
-
-        if(el){
-
-          el.textContent =
-            kpis[key];
-
-        }
-
-      });
-
+    if (filters.substations.length > 0) {
+      substationSelect.value = filters.substations[0];
+      currentFilters.substation = filters.substations[0];
+    }
   }
 
-  /* ------------------------
+  /* ========================
+     LOAD AND UPDATE KPIs
+  ======================== */
+  async function updateKpis(substation, feeder) {
+    const kpis = await ApiService.getKpis(substation, feeder);
+    
+    Object.keys(kpis).forEach(key => {
+      const el = document.getElementById(key);
+      if (el && typeof kpis[key] === 'number') {
+        el.textContent = kpis[key].toFixed(2);
+      }
+    });
+  }
+
+  /* ========================
      RENDER FEEDERS
-  ------------------------ */
-
-  function renderFeeders(city){
-
+  ======================== */
+  async function renderFeeders(substation) {
     feederPills.innerHTML = "";
+    
+    const filters = await ApiService.getFilters();
+    const feeders = filters.feeders_by_substation[substation] || [];
+    
+    feeders.forEach((feeder, index) => {
+      const pill = document.createElement("div");
+      pill.className = index === 0 ? "pill active" : "pill";
+      pill.textContent = feeder;
 
-    SCADA_DATA[city]
-      .feeders
-      .forEach((feeder,index)=>{
-
-        const pill =
-          document.createElement("div");
-
-        pill.className =
-          index===0
-            ? "pill active"
-            : "pill";
-
-        pill.textContent = feeder;
-
-        pill.addEventListener("click",()=>{
-
-          document.querySelectorAll(".pill")
-            .forEach(p=>{
-
-              p.classList.remove("active");
-
-            });
-
-          pill.classList.add("active");
-
+      pill.addEventListener("click", () => {
+        document.querySelectorAll(".pill").forEach(p => {
+          p.classList.remove("active");
         });
-
-        feederPills.appendChild(pill);
-
+        pill.classList.add("active");
+        currentFilters.feeder = feeder;
+        updateDashboard(substation, feeder);
       });
 
+      feederPills.appendChild(pill);
+    });
+
+    if (feeders.length > 0) {
+      currentFilters.feeder = feeders[0];
+    }
   }
 
-  /* ------------------------
+  /* ========================
      UPDATE DASHBOARD
-  ------------------------ */
-
-  function updateDashboard(city){
-
-    updateKpis(city);
-
-    renderFeeders(city);
-
-    createCharts(city);
-
-    updateMap(city);
-
+  ======================== */
+  async function updateDashboard(substation, feeder) {
+    await updateKpis(substation, feeder);
+    await createCharts(substation, feeder);
+    updateMap(substation);
   }
 
-  /* ------------------------
+  /* ========================
      INITIAL LOAD
-  ------------------------ */
+  ======================== */
+  try {
+    await loadFilters();
+    const initialSubstation = substationSelect.value;
+    await renderFeeders(initialSubstation);
+    await updateDashboard(initialSubstation, null);
+  } catch (error) {
+    console.error('Error loading initial data:', error);
+  }
 
-  updateDashboard("Delhi");
-
-  /* ------------------------
+  /* ========================
      SUBSTATION CHANGE
-  ------------------------ */
+  ======================== */
+  substationSelect.addEventListener("change", async (e) => {
+    const selectedSubstation = e.target.value;
+    currentFilters.substation = selectedSubstation;
+    currentFilters.feeder = null;
+    await renderFeeders(selectedSubstation);
+    await updateDashboard(selectedSubstation, null);
+  });
 
-  substationSelect
-    .addEventListener("change",e=>{
-
-      updateDashboard(
-        e.target.value
-      );
-
-    });
-
-  /* ------------------------
+  /* ========================
      REFRESH
-  ------------------------ */
+  ======================== */
+  document.getElementById("refreshBtn").addEventListener("click", async () => {
+    const selectedSubstation = substationSelect.value;
+    await updateDashboard(selectedSubstation, currentFilters.feeder);
+  });
 
-  document
-    .getElementById("refreshBtn")
-    .addEventListener("click",()=>{
-
-      const selectedCity =
-        substationSelect.value;
-
-      updateDashboard(selectedCity);
-
-    });
+  /* ========================
+     UPDATE CLOCK
+  ======================== */
+  function updateClock() {
+    const now = new Date();
+    const timeString = now.toLocaleTimeString();
+    const dateString = now.toLocaleDateString();
+    document.getElementById("clock").textContent = `${dateString} ${timeString}`;
+  }
+  
+  updateClock();
+  setInterval(updateClock, 1000);
 
 });

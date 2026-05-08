@@ -23,9 +23,15 @@
 }
 
 body{
+  min-height:100vh;
   background:var(--bg-root);
   color:var(--text-pri);
   font-family:'Rajdhani',sans-serif;
+}
+
+.app-container {
+  max-width:1440px;
+  margin:0 auto;
 }
 
 /* TOPBAR */
@@ -158,6 +164,8 @@ body{
 
 .main{
   padding:15px 20px;
+  max-width:1320px;
+  margin:0 auto;
 }
 
 /* TOP ROW */
@@ -331,6 +339,24 @@ svg text{
   font-weight:700;
 }
 
+.tile-label{
+  font-size:9px;
+  color:var(--text-mut);
+  margin-top:5px;
+  font-family:'Share Tech Mono',monospace;
+}
+
+.kpi-section-title{
+  font-size:12px;
+  color:var(--cyan);
+  font-weight:600;
+  margin-top:18px;
+  margin-bottom:10px;
+  font-family:'Share Tech Mono',monospace;
+  border-bottom:1px solid var(--border);
+  padding-bottom:8px;
+}
+
 /* SECTIONS */
 
 .section-header{
@@ -385,13 +411,11 @@ svg text{
 
 .chart-wrap{
   position:relative;
-  height:180px;
+  height:220px;
 }
 
 .large{
-  height:150px;
-}
-
+  height:260px;
 .full-chart{
   padding:12px;
   margin-top:12px;
@@ -411,6 +435,30 @@ svg text{
 
   .kpi-row{
     grid-template-columns:repeat(2,1fr);
+  }
+
+}
+
+@media(max-width:760px){
+
+  .filterbar{
+    flex-wrap:wrap;
+  }
+
+  .kpi-row{
+    grid-template-columns:1fr;
+  }
+
+  .top-row{
+    gap:18px;
+  }
+
+  .chart-wrap{
+    height:180px;
+  }
+
+  .large{
+    height:220px;
   }
 
 }
