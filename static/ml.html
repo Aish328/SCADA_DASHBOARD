@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SCADA · ML Intelligence</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+
+  <style>
+    /* ── Reset & tokens ─────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #080d14;
+      --surface:     #0d1520;
+      --surface2:    #111d2b;
+      --border:      #1a2d42;
+      --accent:      #00d4ff;
+      --accent2:     #7b5ef8;
+      --text:        #c8dff0;
+      --muted:       #4a6a85;
+      --danger:      #e74c3c;
+      --warn:        #f39c12;
+      --ok:          #2ecc71;
+      --font-ui:     'Rajdhani', sans-serif;
+      --font-mono:   'Share Tech Mono', monospace;
+      --radius:      6px;
+    }
+
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: 15px; }
+
+    /* Scanline texture */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; pointer-events: none; z-index: 999;
+      background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,.08) 2px, rgba(0,0,0,.08) 4px);
+    }
+
+    /* ── Topbar ─────────────────────────────────────────── */
+    .topbar {
+      height: 48px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px; background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 100;
+    }
+    .breadcrumb { font-size: 11px; letter-spacing: 2px; color: var(--muted); font-family: var(--font-mono); }
+    .breadcrumb span { color: var(--accent); }
+    .tb-right { display: flex; align-items: center; gap: 12px; }
+    .clock { font-family: var(--font-mono); font-size: 13px; color: var(--accent); letter-spacing: 1px; }
+    .back-btn {
+      font-family: var(--font-ui); font-size: 12px; letter-spacing: 1.5px; font-weight: 600;
+      padding: 4px 14px; border: 1px solid var(--border); background: transparent;
+      color: var(--muted); cursor: pointer; border-radius: var(--radius);
+      transition: all .2s;
+    }
+    .back-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Status bar ─────────────────────────────────────── */
+    .statusbar {
+      display: flex; align-items: center; gap: 20px; padding: 8px 24px;
+      background: var(--surface2); border-bottom: 1px solid var(--border);
+      font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+    }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 6px; }
+    .status-dot.live { background: var(--ok); box-shadow: 0 0 6px var(--ok); animation: pulse 2s infinite; }
+    .status-dot.warn { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+    .status-dot.err  { background: var(--danger); }
+    @keyframes pulse { 0%,100%{ opacity:1 } 50%{ opacity:.4 } }
+    .run-btn {
+      margin-left: auto; font-family: var(--font-ui); font-size: 12px; letter-spacing: 1.5px;
+      font-weight: 700; padding: 5px 18px; border: 1px solid var(--accent2);
+      background: rgba(123,94,248,.12); color: var(--accent2); cursor: pointer;
+      border-radius: var(--radius); transition: all .2s;
+    }
+    .run-btn:hover { background: rgba(123,94,248,.28); }
+    .run-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* ── Layout ─────────────────────────────────────────── */
+    .main { padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
+
+    /* ── Section header ─────────────────────────────────── */
+    .section-header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+    .section-tag {
+      font-size: 10px; letter-spacing: 3px; font-weight: 700; color: var(--accent);
+      font-family: var(--font-mono); white-space: nowrap;
+    }
+    .section-line { flex: 1; height: 1px; background: var(--border); }
+
+    /* ── Summary tiles ──────────────────────────────────── */
+    .summary-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+    .tile {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px 16px;
+      display: flex; flex-direction: column; gap: 4px;
+      position: relative; overflow: hidden;
+    }
+    .tile::after {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: var(--accent-bar, var(--accent));
+    }
+    .tile-code { font-size: 10px; letter-spacing: 2px; color: var(--muted); font-family: var(--font-mono); }
+    .tile-value { font-size: 28px; font-weight: 700; color: var(--text); line-height: 1; font-family: var(--font-mono); }
+    .tile-label { font-size: 11px; color: var(--muted); letter-spacing: .5px; }
+
+    /* ── Cards ──────────────────────────────────────────── */
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px 20px;
+    }
+    .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .card-title { font-size: 11px; letter-spacing: 2px; font-weight: 700; color: var(--text); font-family: var(--font-mono); }
+    .live-badge {
+      font-size: 9px; letter-spacing: 2px; padding: 2px 8px;
+      border: 1px solid var(--ok); color: var(--ok); border-radius: 2px;
+    }
+
+    /* ── Chart grids ─────────────────────────────────────── */
+    .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .chart-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+    .chart-wrap { position: relative; height: 240px; }
+    .chart-wrap.tall { height: 300px; }
+    .chart-wrap.short { height: 180px; }
+
+    /* ── Fault table ─────────────────────────────────────── */
+    .fault-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .fault-table th {
+      text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border);
+      font-size: 10px; letter-spacing: 2px; color: var(--muted); font-family: var(--font-mono);
+      font-weight: 400;
+    }
+    .fault-table td { padding: 8px 10px; border-bottom: 1px solid rgba(26,45,66,.5); }
+    .fault-table tr:last-child td { border-bottom: none; }
+    .fault-badge {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px;
+      vertical-align: middle;
+    }
+    .bar-cell { min-width: 120px; }
+    .bar-bg { background: var(--border); border-radius: 2px; height: 6px; }
+    .bar-fill { height: 6px; border-radius: 2px; transition: width .6s ease; }
+
+    /* ── Timeline legend ─────────────────────────────────── */
+    .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+    /* ── Loading overlay ─────────────────────────────────── */
+    .loading {
+      display: flex; align-items: center; justify-content: center;
+      height: 200px; color: var(--muted); font-family: var(--font-mono);
+      font-size: 12px; letter-spacing: 2px;
+    }
+    .spinner {
+      width: 18px; height: 18px; border: 2px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin .8s linear infinite; margin-right: 10px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Forecast method badge ───────────────────────────── */
+    .method-badge {
+      font-size: 9px; letter-spacing: 1.5px; padding: 2px 8px;
+      background: rgba(0,212,255,.08); color: var(--accent);
+      border: 1px solid rgba(0,212,255,.2); border-radius: 2px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="breadcrumb">DASHBOARD › SCADA › <span>ML INTELLIGENCE</span></div>
+  <div class="tb-right">
+    <div class="clock" id="clock"></div>
+    <button class="back-btn" onclick="location.href='/'">← MAIN DASHBOARD</button>
+  </div>
+</div>
+
+<!-- STATUS BAR -->
+<div class="statusbar">
+  <span><span class="status-dot" id="statusDot"></span><span id="statusText">Connecting…</span></span>
+  <span id="lastRun">LAST RUN: —</span>
+  <span id="seqCount">SEQUENCES: —</span>
+  <span id="anomCount">ANOMALIES: —</span>
+  <span style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+    <select id="mlSub" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);
+            border-radius:4px;padding:3px 8px;font-family:var(--font-mono);font-size:11px;"></select>
+    <select id="mlFeeder" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);
+            border-radius:4px;padding:3px 8px;font-family:var(--font-mono);font-size:11px;"></select>
+    <button class="run-btn" id="runBtn" onclick="triggerRun()" style="margin-left:0">▶ RUN NOW</button>
+  </span>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+  <!-- SUMMARY TILES -->
+  <div class="section-header">
+    <div class="section-tag">ANOMALY SUMMARY</div>
+    <div class="section-line"></div>
+  </div>
+  <div class="summary-row">
+    <div class="tile" style="--accent-bar: var(--ok)">
+      <div class="tile-code">TOTAL SEQ</div>
+      <div class="tile-value" id="t-total">—</div>
+      <div class="tile-label">Sequences Analysed</div>
+    </div>
+    <div class="tile" style="--accent-bar: var(--danger)">
+      <div class="tile-code">ANOMALIES</div>
+      <div class="tile-value" id="t-anomaly">—</div>
+      <div class="tile-label">Flagged by Autoencoder</div>
+    </div>
+    <div class="tile" style="--accent-bar: var(--warn)">
+      <div class="tile-code">ANOM %</div>
+      <div class="tile-value" id="t-pct">—</div>
+      <div class="tile-label">% Anomalous</div>
+    </div>
+    <div class="tile" style="--accent-bar: var(--accent2)">
+      <div class="tile-code">THRESHOLD</div>
+      <div class="tile-value" id="t-thresh">—</div>
+      <div class="tile-label">Recon Error Threshold</div>
+    </div>
+    <div class="tile" style="--accent-bar: #3498db">
+      <div class="tile-code">FAULT TYPES</div>
+      <div class="tile-value" id="t-types">—</div>
+      <div class="tile-label">Distinct Classes Found</div>
+    </div>
+  </div>
+
+  <!-- ROW 1: Recon error timeline + Fault distribution -->
+  <div class="section-header">
+    <div class="section-tag">AUTOENCODER · RECONSTRUCTION ERROR</div>
+    <div class="section-line"></div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">RECONSTRUCTION ERROR TIMELINE</div>
+      <div class="live-badge">LIVE</div>
+    </div>
+    <div class="chart-wrap tall" id="reconWrap">
+      <div class="loading"><div class="spinner"></div>LOADING…</div>
+    </div>
+    <div class="legend" id="reconLegend"></div>
+  </div>
+
+  <!-- ROW 2: Pie + Table -->
+  <div class="section-header">
+    <div class="section-tag">FAULT CLASSIFIER · RESULTS</div>
+    <div class="section-line"></div>
+  </div>
+  <div class="chart-row">
+    <div class="card">
+      <div class="card-header"><div class="card-title">FAULT DISTRIBUTION</div></div>
+      <div class="chart-wrap" id="pieWrap">
+        <div class="loading"><div class="spinner"></div>LOADING…</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">FAULT BREAKDOWN</div></div>
+      <div id="faultTableWrap">
+        <div class="loading"><div class="spinner"></div>LOADING…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 3: Phase charts -->
+  <div class="section-header">
+    <div class="section-tag">SIGNAL ANALYSIS · FAULT OVERLAY</div>
+    <div class="section-line"></div>
+  </div>
+  <div class="chart-row">
+    <div class="card">
+      <div class="card-header"><div class="card-title">VOLTAGE FAULTS (SAG / SURGE)</div></div>
+      <div class="chart-wrap" id="voltWrap">
+        <div class="loading"><div class="spinner"></div>LOADING…</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">CURRENT FAULTS (IMBALANCE / STRESS)</div></div>
+      <div class="chart-wrap" id="currWrap">
+        <div class="loading"><div class="spinner"></div>LOADING…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 4: Load forecast -->
+  <div class="section-header">
+    <div class="section-tag">NHITS · ACTIVE LOAD FORECAST (NEXT 1 HOUR)</div>
+    <div class="section-line"></div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">ACTIVE LOAD — HISTORICAL + FORECAST</div>
+      <div class="method-badge" id="forecastMethod">—</div>
+    </div>
+    <div class="chart-wrap tall" id="forecastWrap">
+      <div class="loading"><div class="spinner"></div>LOADING…</div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<script>
+// =========================================================
+// Clock
+// =========================================================
+function updateClock() {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleTimeString('en-GB', { hour12: false });
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// =========================================================
+// Chart instances
+// =========================================================
+const charts = {};
+
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+function makeCanvas(wrapId) {
+  const wrap = document.getElementById(wrapId);
+  wrap.innerHTML = '';
+  const c = document.createElement('canvas');
+  c.style.width = '100%';
+  c.style.height = '100%';
+  wrap.appendChild(c);
+  return c;
+}
+
+// =========================================================
+// Status helpers
+// =========================================================
+function setStatus(state, msg, lastRun) {
+  const dot  = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  dot.className = 'status-dot';
+  if (state === 'live')  dot.classList.add('live');
+  if (state === 'warn')  dot.classList.add('warn');
+  if (state === 'err')   dot.classList.add('err');
+  text.textContent = msg;
+  if (lastRun) document.getElementById('lastRun').textContent =
+    'LAST RUN: ' + new Date(lastRun).toLocaleTimeString('en-GB');
+}
+
+// =========================================================
+// API calls
+// =========================================================
+const BASE = '';
+const mlFilters = { substation: null, feeder: null };
+
+function _mlParams() {
+  const p = new URLSearchParams();
+  if (mlFilters.substation) p.set('substation', mlFilters.substation);
+  if (mlFilters.feeder)     p.set('feeder',     mlFilters.feeder);
+  const s = p.toString();
+  return s ? '&' + s : '';
+}
+
+async function initMlFilters() {
+  try {
+    const r = await fetch(`${BASE}/filters/`);
+    const f = await r.json();
+    const subSel = document.getElementById('mlSub');
+    const fdSel  = document.getElementById('mlFeeder');
+    subSel.innerHTML = '<option value="">ALL SUBSTATIONS</option>' +
+      f.substations.map(s => `<option value="${s}">${s}</option>`).join('');
+    const fillFeeders = () => {
+      const feeders = mlFilters.substation
+        ? (f.feeders_by_substation[mlFilters.substation] || [])
+        : Object.values(f.feeders_by_substation).flat();
+      fdSel.innerHTML = '<option value="">ALL FEEDERS (SUM)</option>' +
+        feeders.map(x => `<option value="${x}">${x}</option>`).join('');
+    };
+    fillFeeders();
+    subSel.addEventListener('change', () => {
+      mlFilters.substation = subSel.value || null;
+      mlFilters.feeder = null; fillFeeders();
+      refreshForecast();
+    });
+    fdSel.addEventListener('change', () => {
+      mlFilters.feeder = fdSel.value || null;
+      refreshForecast();
+    });
+  } catch (e) { console.warn('filters load failed', e); }
+}
+
+async function refreshForecast() {
+  const wrap = document.getElementById('forecastWrap');
+  wrap.innerHTML = '<div class="loading"><div class="spinner"></div>FORECASTING…</div>';
+  let seriesData = null, forecastData = null;
+  try { seriesData   = await fetchSeries();   } catch (e) {}
+  try { forecastData = await fetchForecast(); } catch (e) {}
+  if (forecastData && !forecastData.error) {
+    try { renderForecastChart(seriesData, forecastData); }
+    catch(e) { showErr('forecastWrap', 'Render error: ' + e.message); }
+  } else {
+    showErr('forecastWrap', 'Forecast unavailable for this selection.');
+  }
+}
+
+async function fetchStatus() {
+  const r = await fetch(`${BASE}/ml/status`);
+  return r.json();
+}
+
+async function fetchAnomalies() {
+  const r = await fetch(`${BASE}/ml/anomalies?limit=500${_mlParams()}`);
+  if (!r.ok) throw new Error('Anomaly fetch failed');
+  return r.json();
+}
+
+async function fetchForecast() {
+  const r = await fetch(`${BASE}/ml/forecast?_=1${_mlParams()}`);
+  if (!r.ok) throw new Error('Forecast fetch failed');
+  return r.json();
+}
+
+async function fetchSeries() {
+  const r = await fetch(`${BASE}/data/series?limit=500`);
+  if (!r.ok) return null;
+  return r.json();
+}
+
+async function triggerRun() {
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  btn.textContent = '⟳ RUNNING…';
+  setStatus('warn', 'ML inference running…');
+  await fetch(`${BASE}/ml/run?_=1${_mlParams()}`, { method: 'POST' });
+  // Poll until done
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    const s = await fetchStatus();
+    if (!s.running) break;
+  }
+  btn.disabled = false;
+  btn.textContent = '▶ RUN NOW';
+  await loadAll();
+}
+
+// =========================================================
+// Render: Reconstruction error chart
+// =========================================================
+function renderReconChart(data) {
+  const seqs      = data.sequences;
+  const reconErr  = data.recon_err;
+  const threshold = data.threshold;
+  const colors    = data.fault_colors;
+
+  const labels = seqs.map((_, i) => i);
+  const step   = Math.max(1, Math.floor(seqs.length / 300));
+
+  const pts = reconErr.filter((_, i) => i % step === 0);
+  const lbls = labels.filter((_, i) => i % step === 0);
+  const anomPts = seqs
+    .filter((s, i) => s.is_anomaly && i % step === 0)
+    .map(s => ({ x: s.index, y: data.recon_err[s.index], color: s.fault_color }));
+
+  const c = makeCanvas('reconWrap');
+  charts['recon'] = new Chart(c, {
+    type: 'line',
+    data: {
+      labels: lbls,
+      datasets: [
+        {
+          label: 'Recon Error',
+          data: pts,
+          borderColor: '#3498db',
+          borderWidth: 1,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+        },
+        {
+          label: 'Threshold',
+          data: lbls.map(() => threshold),
+          borderColor: '#e74c3c',
+          borderDash: [6, 3],
+          borderWidth: 1.5,
+          pointRadius: 0,
+          fill: false,
+        },
+        {
+          label: 'Anomalies',
+          data: anomPts.map(p => ({ x: p.x, y: p.y })),
+          type: 'scatter',
+          pointRadius: 3,
+          pointBackgroundColor: anomPts.map(p => p.color),
+          showLine: false,
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#4a6a85', maxTicksLimit: 10, font: { family: 'Share Tech Mono', size: 10 } }, grid: { color: '#1a2d42' } },
+        y: { ticks: { color: '#4a6a85', font: { family: 'Share Tech Mono', size: 10 } }, grid: { color: '#1a2d42' } }
+      }
+    }
+  });
+
+  // Legend
+  const legend = document.getElementById('reconLegend');
+  legend.innerHTML = `
+    <div class="legend-item"><div class="legend-dot" style="background:#3498db"></div>Reconstruction Error</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#e74c3c"></div>Threshold (P${95})</div>
+  `;
+  Object.entries(data.fault_classes).forEach(([id, name]) => {
+    if (id == 0) return;
+    legend.innerHTML += `<div class="legend-item"><div class="legend-dot" style="background:${colors[id]}"></div>${name}</div>`;
+  });
+}
+
+// =========================================================
+// Render: Pie chart
+// =========================================================
+function renderPieChart(summary) {
+  const fc = summary.fault_counts;
+  if (!fc || Object.keys(fc).length === 0) {
+    document.getElementById('pieWrap').innerHTML = '<div class="loading">NO FAULTS DETECTED</div>';
+    return;
+  }
+  const names  = Object.keys(fc);
+  const counts = names.map(n => fc[n].count);
+  const colors = names.map(n => fc[n].color);
+
+  const c = makeCanvas('pieWrap');
+  charts['pie'] = new Chart(c, {
+    type: 'doughnut',
+    data: { labels: names, datasets: [{ data: counts, backgroundColor: colors, borderWidth: 1, borderColor: '#080d14' }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'right',
+          labels: { color: '#c8dff0', font: { family: 'Rajdhani', size: 12 }, padding: 12, boxWidth: 12 }
+        }
+      }
+    }
+  });
+}
+
+// =========================================================
+// Render: Fault table
+// =========================================================
+function renderFaultTable(summary) {
+  const fc = summary.fault_counts;
+  const wrap = document.getElementById('faultTableWrap');
+  if (!fc || Object.keys(fc).length === 0) {
+    wrap.innerHTML = '<div class="loading">NO FAULTS DETECTED</div>';
+    return;
+  }
+  const rows = Object.entries(fc)
+    .sort((a, b) => b[1].count - a[1].count)
+    .map(([name, info]) => `
+      <tr>
+        <td><span class="fault-badge" style="background:${info.color}"></span>${name}</td>
+        <td style="font-family:var(--font-mono); color:var(--text)">${info.count}</td>
+        <td style="font-family:var(--font-mono); color:var(--muted)">${info.pct}%</td>
+        <td class="bar-cell">
+          <div class="bar-bg"><div class="bar-fill" style="width:${info.pct}%; background:${info.color}"></div></div>
+        </td>
+      </tr>`).join('');
+  wrap.innerHTML = `
+    <table class="fault-table">
+      <thead><tr><th>FAULT TYPE</th><th>COUNT</th><th>SHARE</th><th>BAR</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+// =========================================================
+// Render: Voltage / Current fault overlay
+// =========================================================
+function renderSignalCharts(seriesData, anomalyData) {
+  if (!seriesData) {
+    ['voltWrap','currWrap'].forEach(id =>
+      document.getElementById(id).innerHTML = '<div class="loading">NO SERIES DATA</div>');
+    return;
+  }
+
+  const cats    = seriesData.categories;
+  const seqs    = anomalyData.sequences;
+  const seqMap  = {};
+  seqs.forEach(s => { seqMap[s.datetime] = s; });
+
+  const step = Math.max(1, Math.floor(cats.length / 300));
+  const lbls = cats.filter((_, i) => i % step === 0);
+
+  // ── Voltage chart ─────────────────────────────────────
+  const voltData = {
+    vry: seriesData.vry?.filter((_, i) => i % step === 0) || [],
+    vyb: seriesData.vyb?.filter((_, i) => i % step === 0) || [],
+    vbr: seriesData.vbr?.filter((_, i) => i % step === 0) || [],
+  };
+
+  const cv = makeCanvas('voltWrap');
+  charts['volt'] = new Chart(cv, {
+    type: 'line',
+    data: {
+      labels: lbls,
+      datasets: [
+        { label: 'VRY', data: voltData.vry, borderColor: '#e74c3c', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false },
+        { label: 'VYB', data: voltData.vyb, borderColor: '#f39c12', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false },
+        { label: 'VBR', data: voltData.vbr, borderColor: '#9b59b6', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false },
+      ]
+    },
+    options: chartOpts('Voltage (scaled)')
+  });
+
+  // ── Current chart ─────────────────────────────────────
+  const currData = {
+    ir: seriesData.ir?.filter((_, i) => i % step === 0) || [],
+    iy: seriesData.iy?.filter((_, i) => i % step === 0) || [],
+    ib: seriesData.ib?.filter((_, i) => i % step === 0) || [],
+  };
+
+  const cc = makeCanvas('currWrap');
+  charts['curr'] = new Chart(cc, {
+    type: 'line',
+    data: {
+      labels: lbls,
+      datasets: [
+        { label: 'IR', data: currData.ir, borderColor: '#3498db', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false },
+        { label: 'IY', data: currData.iy, borderColor: '#2ecc71', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false },
+        { label: 'IB', data: currData.ib, borderColor: '#00d4ff', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false },
+      ]
+    },
+    options: chartOpts('Current (A)')
+  });
+}
+
+function chartOpts(yLabel) {
+  return {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { labels: { color: '#c8dff0', font: { family: 'Rajdhani', size: 11 }, boxWidth: 10, padding: 8 } }
+    },
+    scales: {
+      x: { ticks: { color: '#4a6a85', maxTicksLimit: 8, font: { family: 'Share Tech Mono', size: 10 } }, grid: { color: '#1a2d42' } },
+      y: {
+        title: { display: true, text: yLabel, color: '#4a6a85', font: { family: 'Share Tech Mono', size: 10 } },
+        ticks: { color: '#4a6a85', font: { family: 'Share Tech Mono', size: 10 } },
+        grid: { color: '#1a2d42' }
+      }
+    }
+  };
+}
+
+// =========================================================
+// Render: Forecast chart
+// =========================================================
+function renderForecastChart(seriesData, forecastData) {
+  document.getElementById('forecastMethod').textContent =
+    (forecastData.method || '').replace('_', ' ').toUpperCase();
+
+  const histLoad = seriesData?.v_avg
+    ? null
+    : (seriesData?.categories?.length
+        ? seriesData.categories.map(() => null)
+        : null);
+
+  // Prefer real Active Load history (MW) shipped in the NHITS payload;
+  // fall back to the old i_avg proxy from /data/series.
+  let histCats = [];
+  let histVals = [];
+  let histLabel = 'Historical (avg current proxy)';
+
+  if (forecastData.history && forecastData.history.mw && forecastData.history.mw.length) {
+    histCats = forecastData.history.ds.map(t => t.slice(11, 16));
+    histVals = forecastData.history.mw;
+    histLabel = 'Actual Load (MW)';
+  } else if (seriesData && seriesData.categories) {
+    const step = Math.max(1, Math.floor(seriesData.categories.length / 200));
+    histCats = seriesData.categories.filter((_, i) => i % step === 0);
+    const loadKey = seriesData.i_avg ? 'i_avg' : null;
+    histVals = loadKey
+      ? seriesData[loadKey].filter((_, i) => i % step === 0)
+      : histCats.map(() => null);
+  }
+
+  const forecastCats = (forecastData.horizon || []).map(t => t.length > 16 ? t.slice(11, 16) : t);
+  const forecastVals = forecastData.values  || [];
+
+  const allCats = [...histCats, ...forecastCats];
+  const histLine = [...histVals, ...forecastCats.map(() => null)];
+  const forecastLine = [
+    ...histCats.map(() => null),
+    ...forecastVals
+  ];
+
+  const c = makeCanvas('forecastWrap');
+  charts['forecast'] = new Chart(c, {
+    type: 'line',
+    data: {
+      labels: allCats,
+      datasets: [
+        {
+          label: histLabel,
+          data: histLine,
+          borderColor: '#3498db',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+        },
+        {
+          label: 'NHITS Forecast (MW)',
+          data: forecastLine,
+          borderColor: '#00d4ff',
+          borderWidth: 2.5,
+          borderDash: [6, 4],
+          pointRadius: 5,
+          pointBackgroundColor: '#00d4ff',
+          tension: 0.3,
+          fill: false,
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#c8dff0', font: { family: 'Rajdhani', size: 12 }, boxWidth: 10 } }
+      },
+      scales: {
+        x: { ticks: { color: '#4a6a85', maxTicksLimit: 10, font: { family: 'Share Tech Mono', size: 10 } }, grid: { color: '#1a2d42' } },
+        y: { ticks: { color: '#4a6a85', font: { family: 'Share Tech Mono', size: 10 } }, grid: { color: '#1a2d42' } }
+      }
+    }
+  });
+}
+
+// =========================================================
+// Summary tiles
+// =========================================================
+function renderSummaryTiles(summary) {
+  document.getElementById('t-total').textContent   = summary.total_sequences ?? '—';
+  document.getElementById('t-anomaly').textContent = summary.anomaly_count   ?? '—';
+  document.getElementById('t-pct').textContent     = (summary.anomaly_pct ?? '—') + (summary.anomaly_pct != null ? '%' : '');
+  document.getElementById('t-thresh').textContent  = summary.recon_threshold ?? '—';
+  document.getElementById('t-types').textContent   = Object.keys(summary.fault_counts || {}).length;
+  document.getElementById('seqCount').textContent  = 'SEQUENCES: ' + (summary.total_sequences ?? '—');
+  document.getElementById('anomCount').textContent = 'ANOMALIES: ' + (summary.anomaly_count ?? '—');
+}
+
+// =========================================================
+// Load everything
+// =========================================================
+function showErr(wrapId, msg) {
+  const el = document.getElementById(wrapId);
+  if (el) el.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:8px;padding:16px;">
+    <div style="color:#e74c3c;font-family:var(--font-mono);font-size:11px;letter-spacing:1px;">⚠ ERROR</div>
+    <div style="color:#4a6a85;font-family:var(--font-mono);font-size:10px;text-align:center;line-height:1.6;">${msg}</div>
+  </div>`;
+}
+
+async function loadAll() {
+  setStatus('warn', 'Fetching ML results…');
+
+  // ── Step 1: Check API is reachable ──────────────────────
+  let statusOk = false;
+  try {
+    const s = await fetchStatus();
+    statusOk = true;
+    if (s.error) {
+      setStatus('err', 'SCHEDULER ERROR: ' + s.error);
+    }
+  } catch (e) {
+    const msg = 'Cannot reach /ml/status — is the FastAPI server running?\n' + e.message;
+    ['reconWrap','pieWrap','faultTableWrap','voltWrap','currWrap','forecastWrap']
+      .forEach(id => showErr(id, msg));
+    setStatus('err', 'SERVER UNREACHABLE');
+    return;
+  }
+
+  // ── Step 2: Fetch anomaly data ───────────────────────────
+  let anomData = null;
+  try {
+    anomData = await fetchAnomalies();
+  } catch (e) {
+    const msg = '/ml/anomalies failed: ' + e.message;
+    ['reconWrap','pieWrap','faultTableWrap','voltWrap','currWrap'].forEach(id => showErr(id, msg));
+    setStatus('err', 'ANOMALY FETCH FAILED');
+  }
+
+  // ── Step 3: Fetch series + forecast (non-fatal) ──────────
+  let seriesData   = null;
+  let forecastData = null;
+
+  try { seriesData   = await fetchSeries();   } catch (e) { console.warn('Series failed:', e); }
+  try { forecastData = await fetchForecast(); } catch (e) { console.warn('Forecast failed:', e); }
+
+  // ── Step 4: Render what we have ──────────────────────────
+  if (anomData) {
+    try { renderSummaryTiles(anomData.summary); } catch(e) { console.error('Summary tiles:', e); }
+    try { renderReconChart(anomData); }           catch(e) { showErr('reconWrap', 'Render error: ' + e.message); }
+    try { renderPieChart(anomData.summary); }     catch(e) { showErr('pieWrap', 'Render error: ' + e.message); }
+    try { renderFaultTable(anomData.summary); }   catch(e) { showErr('faultTableWrap', 'Render error: ' + e.message); }
+    try { renderSignalCharts(seriesData, anomData); } catch(e) {
+      showErr('voltWrap', 'Render error: ' + e.message);
+      showErr('currWrap', 'Render error: ' + e.message);
+    }
+    setStatus('live', 'ML SYSTEM ONLINE', anomData.summary?.last_run);
+  }
+
+  if (forecastData) {
+    try { renderForecastChart(seriesData, forecastData); } catch(e) { showErr('forecastWrap', 'Render error: ' + e.message); }
+  } else {
+    showErr('forecastWrap', 'Forecast unavailable — NHITS models may not be loaded.\nCheck server logs.');
+  }
+}
+
+// =========================================================
+// Poll status & refresh every 15 min
+// =========================================================
+async function pollStatus() {
+  try {
+    const s = await fetchStatus();
+    if (s.last_run) {
+      document.getElementById('lastRun').textContent =
+        'LAST RUN: ' + new Date(s.last_run).toLocaleTimeString('en-GB');
+    }
+    if (s.running) setStatus('warn', 'INFERENCE RUNNING…');
+  } catch {}
+}
+
+// Initial load
+initMlFilters().then(loadAll);
+
+// Refresh data every 15 minutes
+setInterval(loadAll, 15 * 60 * 1000);
+
+// Poll scheduler status every 30s
+setInterval(pollStatus, 30_000);
+</script>
+</body>
+</html>
