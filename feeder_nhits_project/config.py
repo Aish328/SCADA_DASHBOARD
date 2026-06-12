@@ -8,12 +8,16 @@ split ratios live here so the other modules stay free of magic numbers.
 """
 
 from pathlib import Path
-
+import pandas as pd
 # --------------------------------------------------------------------------- #
 # Paths
 # --------------------------------------------------------------------------- #
 PROJECT_DIR = Path(__file__).resolve().parent
-RAW_DATA_PATH = Path("/home/sharika/Desktop/SCADA_DASHBOARD/data/data.csv")          # raw SCADA export
+from db import get_raw_sensor_data
+
+df = get_raw_sensor_data(limit=1000)  # adjust limit as needed
+
+RAW_DATA_PATH = df        # raw SCADA export
 PROCESSED_DIR = PROJECT_DIR / "outputs" / "processed"
 MODELS_DIR = PROJECT_DIR / "models"
 RESULTS_DIR = PROJECT_DIR / "outputs"
