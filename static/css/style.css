@@ -44,6 +44,7 @@ body{
 .tb-right{ display:flex; align-items:center; gap:8px; }
 .search{ background:var(--bg-card); border:1px solid var(--border); color:var(--text-pri); padding:7px 10px; border-radius:4px; }
 .icon-btn{ width:32px; height:32px; border:none; border-radius:4px; background:var(--bg-card); color:var(--text-pri); cursor:pointer; }
+.ml-btn{ width:32px; height:32px; border:none; border-radius:2px; background:var(--bg-card); color:var(--text-pri); cursor:pointer; }
 
 /* FILTER BAR */
 .filterbar{ display:flex; gap:14px; align-items:center; padding:12px 20px; background:var(--bg-surface); border-bottom:1px solid var(--border); flex-wrap:wrap; }
