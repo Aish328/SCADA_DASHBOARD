@@ -1,135 +1,172 @@
-"""
-config.py
-=========
-Central configuration for the per-feeder PatchTST load-forecasting project.
 
-All paths, column maps, feeder definitions, model hyper-parameters and
-split ratios live here so the other modules stay free of magic numbers.
-"""
-
+from __future__ import annotations
+import logging, os
 from pathlib import Path
 import pandas as pd
-# --------------------------------------------------------------------------- #
-# Paths
-# --------------------------------------------------------------------------- #
-PROJECT_DIR = Path(__file__).resolve().parent
-from db import get_raw_sensor_data
 
-df = get_raw_sensor_data(limit=1000)  # adjust limit as needed
+log = logging.getLogger(__name__)
 
-RAW_DATA_PATH = df        # raw SCADA export
-PROCESSED_DIR = PROJECT_DIR / "outputs" / "processed"
-MODELS_DIR = PROJECT_DIR / "models"
-RESULTS_DIR = PROJECT_DIR / "outputs"
-PLOTS_DIR = PROJECT_DIR / "plots"
+# ── Paths ─────────────────────────────────────────────────────────────────────
+PROJECT_DIR      = Path(__file__).resolve().parent
+PROCESSED_DIR    = PROJECT_DIR / "outputs" / "processed"
+MODELS_DIR       = PROJECT_DIR / "models"
+RESULTS_DIR      = PROJECT_DIR / "outputs"
+PLOTS_DIR        = PROJECT_DIR / "plots"
+GLOBAL_MODEL_ID  = "NHITS_GLOBAL"
+GLOBAL_MODEL_DIR = MODELS_DIR / GLOBAL_MODEL_ID
 
-for _d in (PROCESSED_DIR, MODELS_DIR, RESULTS_DIR, PLOTS_DIR):
+for _d in (PROCESSED_DIR, MODELS_DIR, RESULTS_DIR, PLOTS_DIR, GLOBAL_MODEL_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
-# --------------------------------------------------------------------------- #
-# Raw-data schema
-# --------------------------------------------------------------------------- #
-TIME_COL = "Time"
-TARGET_COL = "Active Load"            # parsed to MW
-FEEDER_COL = "FEEDER"
-SUBSTATION_COL = "SUBSTATION"
+# ── PostgreSQL ────────────────────────────────────────────────────────────────
+DB_HOST     = os.getenv("DB_HOST",     "localhost")
+DB_PORT     = int(os.getenv("DB_PORT", "5432"))
+DB_NAME     = os.getenv("DB_NAME",     "scada_db")
+DB_USER     = os.getenv("DB_USER",     "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "root")
+DB_TABLE    = os.getenv("DB_TABLE",    "scada_db")
+DB_SCHEMA   = os.getenv("DB_SCHEMA",   "public")
 
-CURRENT_COLS = ["IR", "IY", "IB"]     # Amps  (e.g. "74.9 A", occasional "AM" typo)
-VOLTAGE_COLS = ["VRY", "VYB", "VBR"]  # kV    (e.g. "10.8 kV")
+# ── DB column names ───────────────────────────────────────────────────────────
+DB_COL_SUBSTATION  = "substation"
+DB_COL_FEEDER      = "feeder"
+DB_COL_IR          = "ir"
+DB_COL_IY          = "iy"
+DB_COL_IB          = "ib"
+DB_COL_VRY         = "vry"
+DB_COL_VYB         = "vyb"
+DB_COL_VBR         = "vbr"
+DB_COL_TIME        = "time"
 
-# Candidate timestamp formats; the loader auto-selects the one whose median
-# sampling interval best matches EXPECTED_FREQ (the export uses MM/DD/YYYY).
-TIME_FORMATS = ["%m/%d/%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S"]
+DB_COL_ACTIVE_LOAD = "active_load"
 
-EXPECTED_FREQ = "3min"                # nominal SCADA polling interval
+DB_SELECT_COLS = [
+    DB_COL_TIME, DB_COL_SUBSTATION, DB_COL_FEEDER,
+    DB_COL_IR, DB_COL_IY, DB_COL_IB,
+    DB_COL_VRY, DB_COL_VYB, DB_COL_VBR,
+    DB_COL_ACTIVE_LOAD,
+]
 
-# --------------------------------------------------------------------------- #
-# Model selection (placed before FEEDERS so model IDs can use it)
-# --------------------------------------------------------------------------- #
-MODEL_NAME = "NHITS"   # exog-capable: uses currents/voltages (hist) + calendar (futr)
+# ── Pipeline aliases ──────────────────────────────────────────────────────────
+TIME_COL       = DB_COL_TIME
+TARGET_COL     = DB_COL_ACTIVE_LOAD
+FEEDER_COL     = DB_COL_FEEDER
+SUBSTATION_COL = DB_COL_SUBSTATION
+CURRENT_COLS   = [DB_COL_IR, DB_COL_IY, DB_COL_IB]
+VOLTAGE_COLS   = [DB_COL_VRY, DB_COL_VYB, DB_COL_VBR]
+EXPECTED_FREQ  = "3min"
+TIME_FORMATS   = [
+    "%m/%d/%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+]
 
-# --------------------------------------------------------------------------- #
-# Feeders -> model names
-# --------------------------------------------------------------------------- #
-# Keys are the exact FEEDER strings found in data.csv.
-_FEEDER_SUFFIXES = {
-    "11KV BHOSALE NAGAR":    "11KV_BHOSALENAGAR",
-    "11KV KUBERA":           "11KV_KUBERA",
-    "11KV MALWADI HADAPSAR": "11KV_MALWADI_HADAPSAR",
-    "RMU1":                  "RMU1",
-    "11KV LUMAX":            "11KV_LUMAX",
+# ── Feeder registry ───────────────────────────────────────────────────────────
+FEEDER_ID_MAP: dict[str, str] = {
+    "11KV BHOSALE NAGAR":    "EP_FD01",
+    "11KV KUBERA":           "EP_FD02",
+    "RMU1":                  "ML_FD01",
+    "11KV LUMAX":            "ML_FD02",
+    "11KV MALWADI HADAPSAR": "ML_FD03",
 }
-FEEDERS = {k: f"{MODEL_NAME}_{v}" for k, v in _FEEDER_SUFFIXES.items()}
+ID_FEEDER_MAP: dict[str, str] = {v: k for k, v in FEEDER_ID_MAP.items()}
 
-# --------------------------------------------------------------------------- #
-# Engineered / calendar feature names (created in data_preprocessing.py)
-# --------------------------------------------------------------------------- #
+# ── Features ──────────────────────────────────────────────────────────────────
+HIST_EXOG = CURRENT_COLS + ["avg_current"]
+FUTR_EXOG = ["tod_sin", "tod_cos"]
 ENGINEERED_FEATURES = [
-    "avg_current",
-    "current_imbalance_pct",
-    "avg_voltage",
-    "voltage_imbalance_pct",
+    "avg_current", "current_imbalance_pct",
+    "avg_voltage",  "voltage_imbalance_pct",
 ]
 CALENDAR_FEATURES = ["hour", "minute", "day_of_week", "is_weekend", "tod_sin", "tod_cos"]
+EDA_FEATURES      = CURRENT_COLS + VOLTAGE_COLS + ENGINEERED_FEATURES
 
-# Exogenous feature lists (used automatically when the chosen model
-# supports them — PatchTST does not, NHITS / TSMixerx etc. do).
-# Model inputs deliberately EXCLUDE the near-constant channels (voltages sit
-# at ~10.8-10.9 kV; imbalance %% barely moves): they add no signal and their
-# tiny variance destabilises normalisation. They remain in EDA_FEATURES for
-# the correlation heatmaps and in the processed CSVs.
-HIST_EXOG = CURRENT_COLS + ["avg_current"]          # informative past-only channels
-FUTR_EXOG = ["tod_sin", "tod_cos"]   # future-known day-pattern conditioning (cyclical)
-EDA_FEATURES = CURRENT_COLS + VOLTAGE_COLS + ENGINEERED_FEATURES
+# ── Hyperparameters ───────────────────────────────────────────────────────────
+MODEL_NAME    = "NHITS"
+INPUT_SIZE    = 48      # 48 × 3 min = 2.4 h  (raise to 96 once you have 7+ days in DB)
+HORIZON       = 20      # 20 × 3 min = 1 h ahead
+BATCH_SIZE    = 16      # small batch — less noisy gradient on single-day dataset
+LEARNING_RATE = 1e-4    # reduced from 5e-4 to prevent training loss spikes
+MAX_STEPS     = 1000    # early stopping will terminate well before this
+RANDOM_SEED   = 42
 
-# Series-level (per-feeder, whole-series) robust scaling applied by
-# NeuralForecast to target + exog, with automatic inverse-transform of
-# forecasts. Window-level scaling (model scaler_type) explodes on
-# near-constant exog channels, so exog-capable models use this instead.
-LOCAL_SCALER_TYPE = "robust"
-
-# --------------------------------------------------------------------------- #
-# Model hyper-parameters
-# --------------------------------------------------------------------------- #
-
-INPUT_SIZE = 96           # 96 x 3 min  ≈ 4.8 h of history
-HORIZON = 20              # 20 x 3 min = 1 hour forecast
-BATCH_SIZE = 32
-LEARNING_RATE = 5e-4
-MAX_STEPS = 500
-RANDOM_SEED = 42
-
-# Capacity is deliberately small: with one day of 3-minute data there are
-# only ~350 training samples per feeder, and larger configurations overfit
-# within ~50 optimisation steps. Tight early stopping (frequent val checks,
-# low patience) matters because Lightning keeps the LAST weights, not the
-# best — stopping close to the validation optimum is the checkpointing.
-PATCHTST_KWARGS = dict(
-    patch_len=16,
-    stride=8,
-    hidden_size=64,
-    n_heads=8,
-    encoder_layers=2,
-    revin=True,            # instance normalisation — important for load data
-    scaler_type="robust",
-    dropout=0.3,
-    early_stop_patience_steps=3,
-    val_check_steps=10,
+# Trainer-level kwargs (safe to pass through NeuralForecast to Lightning)
+NHITS_TRAINER_KWARGS = dict(
+    scaler_type               = "standard",  # z-score per window — more stable than robust
+    # early_stop_patience_steps = 5,           # stop if val doesn't improve for 5 checks
+    gradient_clip_val         = 1.0,  
+    val_check_steps           = 10,          # validate every 10 steps
 )
 
-# --------------------------------------------------------------------------- #
-# Chronological split
-# --------------------------------------------------------------------------- #
-TRAIN_FRAC = 0.70
-VAL_FRAC = 0.15
-TEST_FRAC = 0.15
+# Architecture kwargs (passed directly to NHITS constructor, never to Trainer)
+NHITS_ARCH_KWARGS = dict(
+    n_stacks           = 3,
+    n_blocks           = [1, 1, 1],
+    mlp_units          = [[256, 256]] * 3,
+    n_pool_kernel_size = [2, 2, 1],
+    n_freq_downsample  = [4, 2, 1],
+    dropout_prob_theta = 0.1,
+    activation         = "ReLU",
+    interpolation_mode = "linear",
+    revin              = True,   # per-window instance norm — fixes level-shift bias
+)
 
-# Rolling-origin evaluation over the test span: stride between forecast
-# origins (1 = every timestamp becomes a forecast origin).
+# Per-series (whole-series) scaler applied by NeuralForecast across all windows
+LOCAL_SCALER_TYPE = "standard"   # z-score; fixes level bias vs "robust" on single-day data
+
+# ── Split ratios ──────────────────────────────────────────────────────────────
+TRAIN_FRAC   = 0.70
+VAL_FRAC     = 0.15
+TEST_FRAC    = 0.15
 CV_STEP_SIZE = 1
 
-# --------------------------------------------------------------------------- #
-# Outlier handling
-# --------------------------------------------------------------------------- #
-OUTLIER_ROLLING_WINDOW = 21    # samples (~1 h) for rolling-median filter
-OUTLIER_MAD_THRESHOLD = 5.0    # flag |x - rolling_median| > k * rolling_MAD
+# ── Outlier handling ──────────────────────────────────────────────────────────
+OUTLIER_ROLLING_WINDOW = 21
+OUTLIER_MAD_THRESHOLD  = 5.0
+
+# ── PostgreSQL loader ─────────────────────────────────────────────────────────
+def load_raw_data(
+    feeders:  list[str] | None = None,
+    start_dt: str | None       = None,
+    end_dt:   str | None       = None,
+    limit:    int | None       = None,
+) -> pd.DataFrame:
+    try:
+        import psycopg2
+    except ImportError:
+        raise ImportError("pip install psycopg2-binary")
+
+    target_feeders = feeders or list(FEEDER_ID_MAP.keys())
+    placeholders   = ", ".join(["%s"] * len(target_feeders))
+    where_parts    = [f"{DB_COL_FEEDER} IN ({placeholders})"]
+    params         = list(target_feeders)
+
+    if start_dt:
+        where_parts.append(f"{DB_COL_TIME} >= %s"); params.append(start_dt)
+    if end_dt:
+        where_parts.append(f"{DB_COL_TIME} <= %s"); params.append(end_dt)
+
+    col_list  = ", ".join(DB_SELECT_COLS)
+    where_sql = "WHERE " + " AND ".join(where_parts)
+    limit_sql = f"LIMIT {int(limit)}" if limit else ""
+    query = (f"SELECT {col_list} FROM {DB_SCHEMA}.{DB_TABLE} "
+             f"{where_sql} ORDER BY {DB_COL_TIME} ASC {limit_sql};")
+
+    log.info("Querying %s.%s  feeders=%s  start=%s  end=%s  limit=%s",
+             DB_SCHEMA, DB_TABLE, target_feeders, start_dt, end_dt, limit)
+
+    dsn  = (f"host={DB_HOST} port={DB_PORT} dbname={DB_NAME} "
+            f"user={DB_USER} password={DB_PASSWORD}")
+    conn = psycopg2.connect(dsn)
+    try:
+        df = pd.read_sql_query(query, conn, params=params)
+    finally:
+        conn.close()
+
+    if df.empty:
+        raise RuntimeError(
+            f"No rows returned from {DB_SCHEMA}.{DB_TABLE} "
+            f"for feeders {target_feeders}."
+        )
+    log.info("Loaded %d rows from PostgreSQL (%d feeders)",
+             len(df), df[DB_COL_FEEDER].nunique())
+    return df

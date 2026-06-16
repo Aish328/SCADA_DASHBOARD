@@ -1,27 +1,24 @@
 """
 data_preprocessing.py
 =====================
-SCADA feeder data preprocessing pipeline.
+SCADA feeder data preprocessing pipeline for the GLOBAL NHITS model.
+
+Key difference from the per-feeder pipeline:
+  - `load_and_preprocess()` returns a SINGLE concatenated DataFrame
+    (all feeders, identified by unique_id) instead of a dict of frames.
+  - NeuralForecast natively handles multiple series via `unique_id`.
 
 Steps
 -----
-1.  Load the raw CSV.
-2.  Parse unit-laden strings to numerics:
-        "1.53 MW" / "850 kW"  -> MW   (kW values divided by 1000)
-        "74.9 A"  / "74.9 AM" -> A    (unit typos tolerated)
-        "10.8 kV"             -> kV
-3.  Parse `Time` (auto-detects MM/DD vs DD/MM by checking which format
-    yields the expected ~3-minute sampling interval) and sort.
-4.  Per feeder: de-duplicate timestamps, resample to a regular 3-minute
-    grid, repair gaps by time-interpolation.
-5.  Outlier handling: physical-bound clipping + rolling-median/MAD filter.
-6.  Feature engineering: calendar features + electrical features
-    (average current/voltage, current/voltage imbalance).
-7.  Emit one NeuralForecast-ready frame per feeder
-    (columns: unique_id, ds, y, <exogenous features>).
+1.  Load raw CSV; parse unit-laden strings → numerics.
+2.  Auto-detect timestamp format (MM/DD vs DD/MM by interval heuristic).
+3.  Per feeder: de-duplicate, resample to 3-min grid, repair gaps.
+4.  Outlier handling: rolling-median/MAD filter + physical-bound clipping.
+5.  Feature engineering: calendar (cyclical ToD) + electrical (avg current, imbalance).
+6.  Concatenate all feeder frames → single NeuralForecast-ready DataFrame.
+7.  Assign `unique_id` from FEEDER_ID_MAP (short alphanumeric, stable across runs).
 
 Run directly to materialise processed CSVs:
-
     python data_preprocessing.py [--data path/to/data.csv]
 """
 
@@ -37,16 +34,18 @@ import pandas as pd
 
 import config as cfg
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("preprocess")
 
 _NUM_UNIT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*([A-Za-z]*)")
 
+
 # --------------------------------------------------------------------------- #
-# Unit parsing
+# Unit parsers
 # --------------------------------------------------------------------------- #
-def parse_value_unit(raw: object) -> tuple[float, str]:
-    """Extract (value, unit) from strings like '1.53 MW'. Returns (nan, '') on failure."""
+def _parse_value_unit(raw: object) -> tuple[float, str]:
+    """Extract (value, unit-string) from '1.53 MW', '74.9 A', '10.8 kV', etc."""
     if pd.isna(raw):
         return np.nan, ""
     m = _NUM_UNIT_RE.search(str(raw))
@@ -56,53 +55,53 @@ def parse_value_unit(raw: object) -> tuple[float, str]:
 
 
 def parse_load_mw(raw: object) -> float:
-    """'1.53 MW' -> 1.53 ;  '850 kW' -> 0.85 ;  bare numbers assumed MW."""
-    value, unit = parse_value_unit(raw)
-    if np.isnan(value):
+    """'1.53 MW' → 1.53 | '850 kW' → 0.85 | bare number assumed MW."""
+    v, u = _parse_value_unit(raw)
+    if np.isnan(v):
         return np.nan
-    if unit.startswith("KW"):
-        return value / 1000.0
-    if unit.startswith("W") and unit != "":          # plain watts (defensive)
-        return value / 1e6
-    return value                                      # MW or unit-less
+    if u.startswith("KW"):
+        return v / 1000.0
+    if u == "W":                     # plain watts (defensive)
+        return v / 1e6
+    return v                         # MW or unit-less
 
 
 def parse_current_a(raw: object) -> float:
-    """'74.9 A' (or typo 'AM') -> 74.9."""
-    value, _ = parse_value_unit(raw)
-    return value
+    """'74.9 A' (or typo 'AM') → 74.9."""
+    v, _ = _parse_value_unit(raw)
+    return v
 
 
 def parse_voltage_kv(raw: object) -> float:
-    """'10.8 kV' -> 10.8 ;  bare volts converted to kV."""
-    value, unit = parse_value_unit(raw)
-    if np.isnan(value):
+    """'10.8 kV' → 10.8 | bare volts → kV."""
+    v, u = _parse_value_unit(raw)
+    if np.isnan(v):
         return np.nan
-    if unit == "V":
-        return value / 1000.0
-    return value
+    return v / 1000.0 if u == "V" else v
 
 
 # --------------------------------------------------------------------------- #
-# Timestamp parsing
+# Timestamp parsing — auto-selects MM/DD vs DD/MM
 # --------------------------------------------------------------------------- #
 def parse_time_column(series: pd.Series) -> pd.Series:
     """
-    Try each candidate format; keep the one that (a) parses the most rows and
-    (b) yields a median sampling interval closest to EXPECTED_FREQ.
-    Guards against the classic MM/DD vs DD/MM ambiguity.
+    Try each candidate format in cfg.TIME_FORMATS.
+    Score = (n_unparsed, |median_interval − EXPECTED_FREQ|).
+    The format with the lowest score wins (fewest bad rows and closest
+    to the expected 3-minute SCADA polling cadence).
     """
     expected = pd.Timedelta(cfg.EXPECTED_FREQ)
-    best, best_score = None, None
+    best, best_score, best_fmt = None, None, None
     for fmt in cfg.TIME_FORMATS:
         parsed = pd.to_datetime(series, format=fmt, errors="coerce")
-        n_bad = int(parsed.isna().sum())
-        med = parsed.sort_values().diff().median()
+        n_bad  = int(parsed.isna().sum())
+        med    = parsed.sort_values().diff().median()
         interval_err = abs((med - expected).total_seconds()) if pd.notna(med) else np.inf
-        score = (n_bad, interval_err)
+        score  = (n_bad, interval_err)
         if best_score is None or score < best_score:
             best, best_score, best_fmt = parsed, score, fmt
-    log.info("Timestamp format selected: %s (unparsed rows: %d)", best_fmt, best_score[0])
+    log.info("Timestamp format selected: %s  (unparsed rows: %d)",
+             best_fmt, best_score[0])
     return best
 
 
@@ -114,9 +113,10 @@ def remove_outliers(s: pd.Series,
                     k: float = cfg.OUTLIER_MAD_THRESHOLD,
                     non_negative: bool = True) -> pd.Series:
     """
-    Replace outliers with NaN (later interpolated):
-      * physically impossible values (negative load/current/voltage),
-      * points deviating > k rolling-MADs from the rolling median.
+    Mark outliers as NaN (interpolated later):
+      • negative values (physical impossibility)
+      • points > k rolling-MADs from the rolling median
+    Uses a centred window with min_periods=3 for robustness at series edges.
     """
     s = s.copy()
     if non_negative:
@@ -124,9 +124,8 @@ def remove_outliers(s: pd.Series,
     med = s.rolling(window, center=True, min_periods=3).median()
     mad = (s - med).abs().rolling(window, center=True, min_periods=3).median()
     mad = mad.replace(0, np.nan).ffill().bfill()
-    mask = (s - med).abs() > k * 1.4826 * mad
-    n = int(mask.sum())
-    if n:
+    mask = (s - med).abs() > k * 1.4826 * mad   # 1.4826 makes MAD consistent with σ
+    if mask.sum():
         s[mask] = np.nan
     return s
 
@@ -135,35 +134,45 @@ def remove_outliers(s: pd.Series,
 # Feature engineering
 # --------------------------------------------------------------------------- #
 def add_electrical_features(df: pd.DataFrame) -> pd.DataFrame:
-    ir, iy, ib = (df[c] for c in cfg.CURRENT_COLS)
+    """
+    avg_current           – mean of three-phase currents (informative for load)
+    current_imbalance_pct – NEMA-style: max phase deviation / mean (%) — EDA only
+    avg_voltage           – mean of three-phase voltages (EDA only; near-constant)
+    voltage_imbalance_pct – max phase deviation / mean (%) — EDA only
+    """
+    ir, iy, ib  = (df[c] for c in cfg.CURRENT_COLS)
     vry, vyb, vbr = (df[c] for c in cfg.VOLTAGE_COLS)
 
-    df["avg_current"] = (ir + iy + ib) / 3.0
-    # NEMA-style imbalance: max deviation from mean / mean (%)
-    i_dev = pd.concat([(ir - df["avg_current"]).abs(),
-                       (iy - df["avg_current"]).abs(),
-                       (ib - df["avg_current"]).abs()], axis=1).max(axis=1)
-    df["current_imbalance_pct"] = 100.0 * i_dev / df["avg_current"].replace(0, np.nan)
+    avg_i = (ir + iy + ib) / 3.0
+    df["avg_current"] = avg_i
+    i_dev = pd.concat([(ir - avg_i).abs(),
+                       (iy - avg_i).abs(),
+                       (ib - avg_i).abs()], axis=1).max(axis=1)
+    df["current_imbalance_pct"] = 100.0 * i_dev / avg_i.replace(0, np.nan)
 
-    df["avg_voltage"] = (vry + vyb + vbr) / 3.0
-    v_dev = pd.concat([(vry - df["avg_voltage"]).abs(),
-                       (vyb - df["avg_voltage"]).abs(),
-                       (vbr - df["avg_voltage"]).abs()], axis=1).max(axis=1)
-    df["voltage_imbalance_pct"] = 100.0 * v_dev / df["avg_voltage"].replace(0, np.nan)
+    avg_v = (vry + vyb + vbr) / 3.0
+    df["avg_voltage"] = avg_v
+    v_dev = pd.concat([(vry - avg_v).abs(),
+                       (vyb - avg_v).abs(),
+                       (vbr - avg_v).abs()], axis=1).max(axis=1)
+    df["voltage_imbalance_pct"] = 100.0 * v_dev / avg_v.replace(0, np.nan)
     return df
 
 
 def add_calendar_features(df: pd.DataFrame, ts_col: str = "ds") -> pd.DataFrame:
+    """
+    Cyclical time-of-day (tod_sin / tod_cos):
+      • Bounded and continuous across midnight — safe for robust scaler.
+      • Varies within every 4.8 h history window — gives the model diurnal signal.
+    Raw hour/minute/day_of_week kept for EDA but excluded from FUTR_EXOG
+    because they are near-constant over a single window (zero IQR breaks
+    window-level robust normalisation and destabilises gradient flow).
+    """
     ts = df[ts_col]
-    df["hour"] = ts.dt.hour.astype(float)
-    df["minute"] = ts.dt.minute.astype(float)
+    df["hour"]        = ts.dt.hour.astype(float)
+    df["minute"]      = ts.dt.minute.astype(float)
     df["day_of_week"] = ts.dt.dayofweek.astype(float)
-    df["is_weekend"] = (ts.dt.dayofweek >= 5).astype(float)
-    # Cyclical time-of-day encoding: bounded, smooth, and varies within every
-    # training window — this is what lets the model condition on the daily
-    # pattern. Raw hour/minute/day_of_week are kept for EDA but excluded from
-    # FUTR_EXOG because they are (near-)constant inside a 4.8 h window, which
-    # breaks per-window robust scaling (zero IQR) and destabilises training.
+    df["is_weekend"]  = (ts.dt.dayofweek >= 5).astype(float)
     tod = (ts.dt.hour + ts.dt.minute / 60.0) / 24.0
     df["tod_sin"] = np.sin(2 * np.pi * tod)
     df["tod_cos"] = np.cos(2 * np.pi * tod)
@@ -171,92 +180,203 @@ def add_calendar_features(df: pd.DataFrame, ts_col: str = "ds") -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- #
-# Per-feeder pipeline
+# Per-feeder pipeline  (called internally; builds one clean series frame)
 # --------------------------------------------------------------------------- #
-def build_feeder_frame(raw: pd.DataFrame, feeder: str) -> pd.DataFrame:
-    """Filter, clean, regularise and feature-engineer a single feeder series."""
-    g = raw[raw[cfg.FEEDER_COL] == feeder].copy()
+def _build_feeder_frame(raw: pd.DataFrame, feeder: str) -> pd.DataFrame:
+    """
+    Filter rows for one feeder → clean → regularise → feature-engineer.
+    Returns a NeuralForecast-ready frame with unique_id set to the feeder's
+    short alphanumeric ID from FEEDER_ID_MAP.
+    """
+    uid = cfg.FEEDER_ID_MAP[feeder]
+    g   = raw[raw[cfg.FEEDER_COL] == feeder].copy()
     if g.empty:
         raise ValueError(f"No rows found for feeder {feeder!r}")
 
-    g = g.sort_values("ds").drop_duplicates(subset="ds", keep="last").set_index("ds")
+    g = (g.sort_values("ds")
+          .drop_duplicates(subset="ds", keep="last")
+          .set_index("ds"))
 
     numeric_cols = ["y"] + cfg.CURRENT_COLS + cfg.VOLTAGE_COLS
     g = g[numeric_cols]
 
-    # Regular 3-minute grid (NeuralForecast requires a fixed frequency)
+    # Resample to regular 3-min grid (NeuralForecast requires fixed frequency)
     g = g.resample(cfg.EXPECTED_FREQ).mean()
 
-    # Outlier removal then gap repair
+    # Remove outliers then repair gaps by time-aware linear interpolation
     for c in numeric_cols:
         g[c] = remove_outliers(g[c])
-    n_missing = int(g["y"].isna().sum())
+    n_repaired = int(g["y"].isna().sum())
     g = g.interpolate(method="time", limit_direction="both")
 
     g = g.reset_index()
     g = add_electrical_features(g)
     g = add_calendar_features(g)
-    g["unique_id"] = cfg.FEEDERS[feeder]
 
-    log.info("Feeder %-22s -> %4d rows on regular grid (%d repaired/outlier points)",
-             feeder, len(g), n_missing)
+    # unique_id is the stable short code — NeuralForecast groups series by this
+    g["unique_id"] = uid
 
-    # Keep ALL engineered + calendar features for EDA; training subsets later.
-    all_feats = list(dict.fromkeys(cfg.EDA_FEATURES + cfg.HIST_EXOG
-                                   + cfg.FUTR_EXOG + cfg.CALENDAR_FEATURES))
-    ordered = ["unique_id", "ds", "y"] + all_feats
+    log.info("Feeder %-26s (uid=%s)  ->  %4d rows  (%d repaired/outlier points)",
+             feeder, uid, len(g), n_repaired)
+
+    # Keep ALL features for EDA; training code subsets to model inputs later
+    all_feats = list(dict.fromkeys(
+        cfg.EDA_FEATURES + cfg.HIST_EXOG + cfg.FUTR_EXOG + cfg.CALENDAR_FEATURES))
+    ordered   = ["unique_id", "ds", "y"] + all_feats
     return g[ordered]
 
 
-def load_and_preprocess(data_path: Path | str = cfg.RAW_DATA_PATH) -> dict[str, pd.DataFrame]:
-    """Full pipeline. Returns {feeder_name: NeuralForecast-ready DataFrame}."""
-    log.info("Loading raw data: %s", data_path)
-    raw = pd.read_csv(data_path)
+# --------------------------------------------------------------------------- #
+# Public API
+# --------------------------------------------------------------------------- #
+def _coerce_numerics(raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Coerce active_load, current, and voltage columns to float.
 
-    # ---- unit parsing -----------------------------------------------------
-    raw["y"] = raw[cfg.TARGET_COL].map(parse_load_mw)
+    PostgreSQL FLOAT/NUMERIC columns arrive as Python floats already — the
+    pd.to_numeric() call is a no-op for those.  If the DB stores unit-laden
+    strings ("1.53 MW", "74.9 A") the unit parsers are applied as fallback.
+    Both paths produce a float column; no data is lost either way.
+    """
+    # --- active_load → MW ----------------------------------------------------
+    sample = raw[cfg.TARGET_COL].dropna().iloc[:1]
+    if sample.empty or pd.to_numeric(sample, errors="coerce").notna().all():
+        # Already numeric (DB stores FLOAT) — direct cast, MW assumed
+        raw["y"] = pd.to_numeric(raw[cfg.TARGET_COL], errors="coerce")
+    else:
+        # String values like "1.53 MW" — use unit parser
+        raw["y"] = raw[cfg.TARGET_COL].map(parse_load_mw)
+
+    # --- currents → A --------------------------------------------------------
     for c in cfg.CURRENT_COLS:
-        raw[c] = raw[c].map(parse_current_a)
-    for c in cfg.VOLTAGE_COLS:
-        raw[c] = raw[c].map(parse_voltage_kv)
+        sample_c = raw[c].dropna().iloc[:1]
+        if sample_c.empty or pd.to_numeric(sample_c, errors="coerce").notna().all():
+            raw[c] = pd.to_numeric(raw[c], errors="coerce")
+        else:
+            raw[c] = raw[c].map(parse_current_a)
 
-    # ---- timestamps -------------------------------------------------------
-    raw["ds"] = parse_time_column(raw[cfg.TIME_COL])
+    # --- voltages → kV -------------------------------------------------------
+    for c in cfg.VOLTAGE_COLS:
+        sample_v = raw[c].dropna().iloc[:1]
+        if sample_v.empty or pd.to_numeric(sample_v, errors="coerce").notna().all():
+            raw[c] = pd.to_numeric(raw[c], errors="coerce")
+        else:
+            raw[c] = raw[c].map(parse_voltage_kv)
+
+    return raw
+
+
+def load_and_preprocess(
+    feeders:  list[str] | None = None,
+    start_dt: str | None       = None,
+    end_dt:   str | None       = None,
+    limit:    int | None       = None,
+) -> pd.DataFrame:
+    """
+    Full preprocessing pipeline — reads from PostgreSQL.
+
+    Parameters
+    ----------
+    feeders  : Feeder names to include (default: all in FEEDER_ID_MAP).
+    start_dt : Earliest timestamp, ISO string e.g. '2026-01-01 00:00:00'.
+    end_dt   : Latest  timestamp, ISO string.
+    limit    : Row cap (useful for quick smoke-tests).
+
+    Returns
+    -------
+    pd.DataFrame
+        Single concatenated NeuralForecast-ready frame, columns:
+            unique_id | ds | y | ir | iy | ib | avg_current |
+            tod_sin | tod_cos | [EDA features …]
+        Sorted by (unique_id, ds).
+
+    Data source
+    -----------
+    Calls cfg.load_raw_data() which issues a parameterised SELECT against
+    the dashboard PostgreSQL table.  Connection is configured via env vars —
+    see config.py for the full list (DB_HOST, DB_PORT, DB_NAME, DB_USER,
+    DB_PASSWORD, DB_TABLE, DB_SCHEMA).
+    """
+    # ---- 1. Fetch from PostgreSQL ------------------------------------------
+    raw = cfg.load_raw_data(
+        feeders  = feeders,
+        start_dt = start_dt,
+        end_dt   = end_dt,
+        limit    = limit,
+    )
+
+    # ---- 2. Numeric coercion (handles both float and unit-string columns) ---
+    raw = _coerce_numerics(raw)
+
+    # ---- 3. Timestamps ------------------------------------------------------
+    # psycopg2 / pandas read_sql returns datetime objects for TIMESTAMP columns;
+    # pd.to_datetime() is a safe no-op in that case.  If the column is a string
+    # (e.g. TEXT column), parse_time_column() auto-selects MM/DD vs DD/MM.
+    if pd.api.types.is_datetime64_any_dtype(raw[cfg.TIME_COL]):
+        raw["ds"] = pd.to_datetime(raw[cfg.TIME_COL], utc=False)
+    else:
+        raw["ds"] = parse_time_column(raw[cfg.TIME_COL])
+
     raw = raw.dropna(subset=["ds", "y"])
 
-    # ---- per feeder -------------------------------------------------------
-    frames: dict[str, pd.DataFrame] = {}
-    for feeder in cfg.FEEDERS:
-        frames[feeder] = build_feeder_frame(raw, feeder)
+    # ---- 4. Per-feeder processing → concatenate ----------------------------
+    target_feeders = feeders or list(cfg.FEEDER_ID_MAP.keys())
+    parts: list[pd.DataFrame] = []
+    for feeder in target_feeders:
+        if feeder not in raw[cfg.FEEDER_COL].values:
+            log.warning("Feeder %r not found in DB results — skipping.", feeder)
+            continue
+        parts.append(_build_feeder_frame(raw, feeder))
 
-    return frames
+    if not parts:
+        raise RuntimeError(
+            "No feeder data could be processed. "
+            "Check DB_TABLE contents and FEEDER_ID_MAP keys."
+        )
+
+    combined = (pd.concat(parts, ignore_index=True)
+                  .sort_values(["unique_id", "ds"])
+                  .reset_index(drop=True))
+    log.info("Combined frame: %d rows across %d feeders",
+             len(combined), combined["unique_id"].nunique())
+    return combined
 
 
 def chronological_split_sizes(n: int) -> tuple[int, int, int]:
-    """Return (n_train, n_val, n_test) for a 70/15/15 chronological split."""
-    n_test = int(round(n * cfg.TEST_FRAC))
-    n_val = int(round(n * cfg.VAL_FRAC))
+    """Return (n_train, n_val, n_test) for a 70 / 15 / 15 chronological split."""
+    n_test  = int(round(n * cfg.TEST_FRAC))
+    n_val   = int(round(n * cfg.VAL_FRAC))
     n_train = n - n_val - n_test
     return n_train, n_val, n_test
 
 
-def save_processed(frames: dict[str, pd.DataFrame]) -> None:
-    combined = pd.concat(frames.values(), ignore_index=True)
-    combined.to_csv(cfg.PROCESSED_DIR / "all_feeders_processed.csv", index=False)
-    for feeder, df in frames.items():
-        fn = cfg.PROCESSED_DIR / f"{cfg.FEEDERS[feeder]}_processed.csv"
-        df.to_csv(fn, index=False)
+def save_processed(df: pd.DataFrame) -> None:
+    """Save the combined frame and per-feeder CSVs for audit / EDA."""
+    df.to_csv(cfg.PROCESSED_DIR / "all_feeders_processed.csv", index=False)
+    for uid, grp in df.groupby("unique_id"):
+        grp.to_csv(cfg.PROCESSED_DIR / f"{uid}_processed.csv", index=False)
     log.info("Processed data written to %s", cfg.PROCESSED_DIR)
 
 
+# --------------------------------------------------------------------------- #
+# CLI entry point
+# --------------------------------------------------------------------------- #
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Preprocess SCADA feeder data")
-    ap.add_argument("--data", default=str(cfg.RAW_DATA_PATH), help="Path to raw data.csv")
+    ap = argparse.ArgumentParser(
+        description="Preprocess SCADA feeder data from PostgreSQL (global model)"
+    )
+    ap.add_argument("--start",  default=None, help="Start datetime ISO e.g. 2026-01-01 00:00:00")
+    ap.add_argument("--end",    default=None, help="End datetime ISO")
+    ap.add_argument("--limit",  default=None, type=int, help="Row cap for testing")
     args = ap.parse_args()
 
-    frames = load_and_preprocess(args.data)
-    save_processed(frames)
-    for feeder, df in frames.items():
-        tr, va, te = chronological_split_sizes(len(df))
-        log.info("%-22s n=%4d  train=%d val=%d test=%d  span %s -> %s",
-                 feeder, len(df), tr, va, te, df["ds"].min(), df["ds"].max())
+    df = load_and_preprocess(start_dt=args.start, end_dt=args.end, limit=args.limit)
+    save_processed(df)
+
+    print("\nPer-feeder summary:")
+    for uid, grp in df.groupby("unique_id"):
+        name = cfg.ID_FEEDER_MAP.get(uid, uid)
+        tr, va, te = chronological_split_sizes(len(grp))
+        log.info("  %-8s  %-26s  n=%4d  train=%d val=%d test=%d  %s → %s",
+                 uid, name, len(grp), tr, va, te,
+                 grp["ds"].min(), grp["ds"].max())

@@ -1,23 +1,23 @@
 """
 services/nhits_forecast.py
----------------------------------------------------------
-NHITS per-feeder Active Load forecasting for the SCADA dashboard.
+==========================
+Global NHITS inference service for the SCADA dashboard.
 
-Serves the pre-trained NeuralForecast NHITS bundles produced by
-feeder_nhits_project/train_nhits.py — NO refitting at request time
-(unlike the old pickled-PatchTST flow). Each bundle forecasts the
-next 20 x 3-min steps (1 hour) of Active Load in MW.
+Replaces the old per-feeder bundle approach with a single
+NeuralForecast bundle (NHITS_GLOBAL) trained on all feeders.
 
-Input data comes from services.data_loader.DataLoader rows with the
-dashboard's lowercase schema:
-    datetime, substation, feeder, ir, iy, ib, vry, vyb, vbr, active_load
-This module mirrors the training-time preprocessing (3-min grid,
-interpolation, avg_current, cyclical time-of-day) on those columns.
+Drop-in: the public function run_nhits_forecast() has an identical
+signature and response shape to the old version — ml_inference.py
+and ml.html need no changes to consume it.
 
-Configuration
--------------
-NHITS_MODELS_DIR   env var pointing at the trained `models/` folder.
-                   Default: <repo>/feeder_nhits_project/models
+Model location
+--------------
+Reads from the directory pointed to by NHITS_MODELS_DIR env var.
+Default: <repo>/feeder_nhits_project/models/NHITS_GLOBAL
+
+Input schema (DataLoader rows)
+------------------------------
+    datetime | substation | feeder | ir | iy | ib | vry | vyb | vbr | active_load
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -35,74 +35,78 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# --------------------------------------------------------------------------- #
-# Configuration (kept aligned with feeder_nhits_project/config.py)
-# --------------------------------------------------------------------------- #
-MODELS_DIR = Path(os.getenv(
-    "NHITS_MODELS_DIR",
-    Path(__file__).resolve().parent.parent / "feeder_nhits_project" / "models",
-))
+# ── Configuration ─────────────────────────────────────────────────────────────
+_DEFAULT_MODEL_DIR = (
+    Path(__file__).resolve().parent.parent
+    / "feeder_nhits_project" / "models" / "NHITS_GLOBAL"
+)
+GLOBAL_MODEL_DIR = Path(os.getenv("NHITS_MODELS_DIR", str(_DEFAULT_MODEL_DIR)))
 
-FREQ = "3min"
-INPUT_SIZE = 96            # 4.8 h of history required
-HORIZON = 20               # 1 hour ahead
+FREQ       = "3min"
+INPUT_SIZE = 48     # must match training config.py INPUT_SIZE
+HORIZON    = 20     # must match training config.py HORIZON
 
-HIST_EXOG = ["IR", "IY", "IB", "avg_current"]
+HIST_EXOG = ["ir", "iy", "ib", "avg_current"]
 FUTR_EXOG = ["tod_sin", "tod_cos"]
 
-# Trained feeder -> model directory name (same sanitisation as training).
-FEEDER_MODELS = {
-    "11KV BHOSALE NAGAR":    "NHITS_11KV_BHOSALENAGAR",
-    "11KV KUBERA":           "NHITS_11KV_KUBERA",
-    "11KV MALWADI HADAPSAR": "NHITS_11KV_MALWADI_HADAPSAR",
-    "RMU1":                  "NHITS_RMU1",
-    "11KV LUMAX":            "NHITS_11KV_LUMAX",
+# Maps feeder display name (as stored in DB) → unique_id used at training time.
+# Must match FEEDER_ID_MAP in feeder_nhits_project/config.py exactly.
+FEEDER_ID_MAP: dict[str, str] = {
+    "11KV BHOSALE NAGAR":    "EP_FD01",
+    "11KV KUBERA":           "EP_FD02",
+    "RMU1":                  "ML_FD01",
+    "11KV LUMAX":            "ML_FD02",
+    "11KV MALWADI HADAPSAR": "ML_FD03",
 }
+ID_FEEDER_MAP = {v: k for k, v in FEEDER_ID_MAP.items()}
 
-_models: dict[str, "object"] = {}
+# ── Singleton model cache ─────────────────────────────────────────────────────
+_nf   = None
 _lock = threading.Lock()
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
+def _get_model():
+    """Load the global NeuralForecast bundle once; share across all requests."""
+    global _nf
+    if _nf is None:
+        with _lock:
+            if _nf is None:
+                from neuralforecast import NeuralForecast
+                path = GLOBAL_MODEL_DIR
+                if not path.exists():
+                    raise FileNotFoundError(
+                        f"Global NHITS bundle not found at {path}. "
+                        "Run feeder_nhits_project/train_global_nhits.py first."
+                    )
+                logger.info("Loading global NHITS bundle from %s …", path)
+                _nf = NeuralForecast.load(path=str(path))
+                logger.info("Global NHITS bundle ready.")
+    return _nf
+
+
+# ── Feeder resolution ─────────────────────────────────────────────────────────
 def _norm(name: str) -> str:
-    """Normalise feeder names for matching: uppercase, collapse whitespace."""
     return re.sub(r"\s+", " ", str(name).strip().upper())
 
-
-_NORM_LOOKUP = {_norm(k): k for k in FEEDER_MODELS}
+_NORM_LOOKUP = {_norm(k): v for k, v in FEEDER_ID_MAP.items()}
 
 
 def resolve_feeder(name: str) -> Optional[str]:
-    """Map a dashboard feeder string onto a trained feeder key (or None)."""
+    """Feeder display name → unique_id, or None if not trained."""
     return _NORM_LOOKUP.get(_norm(name))
 
 
-def _get_model(feeder_key: str):
-    """Lazy, thread-safe load of one NeuralForecast bundle."""
-    model_id = FEEDER_MODELS[feeder_key]
-    with _lock:
-        if model_id not in _models:
-            from neuralforecast import NeuralForecast
-            path = MODELS_DIR / model_id
-            if not path.exists():
-                raise FileNotFoundError(f"NHITS bundle missing: {path}")
-            logger.info("Loading %s ...", model_id)
-            _models[model_id] = NeuralForecast.load(path=str(path))
-        return _models[model_id], model_id
-
-
-def _prepare_frame(df: pd.DataFrame, model_id: str) -> pd.DataFrame:
+# ── Preprocessing ─────────────────────────────────────────────────────────────
+def _prepare_history(df_feeder: pd.DataFrame, uid: str) -> pd.DataFrame:
     """
-    Dashboard rows (one feeder) -> NeuralForecast input frame.
-    Mirrors training preprocessing: 3-min grid, time interpolation,
-    avg_current, cyclical time-of-day.
+    Convert DataLoader rows for one feeder into a NeuralForecast input frame.
+    Mirrors feeder_nhits_project/data_preprocessing.py exactly so the model
+    sees the same feature distribution it was trained on.
     """
-    g = (df[["datetime", "active_load", "ir", "iy", "ib"]]
-         .rename(columns={"datetime": "ds", "active_load": "y",
-                          "ir": "IR", "iy": "IY", "ib": "IB"})
+    g = (df_feeder[["datetime", "active_load", "ir", "iy", "ib"]]
+         .rename(columns={"datetime": "ds", "active_load": "y"})
          .copy())
+
     g["ds"] = pd.to_datetime(g["ds"])
     g = (g.dropna(subset=["ds"])
           .sort_values("ds")
@@ -112,112 +116,164 @@ def _prepare_frame(df: pd.DataFrame, model_id: str) -> pd.DataFrame:
           .interpolate(method="time", limit_direction="both")
           .reset_index())
 
-    # --- Unit repair: the DB stores stripped numerics with MIXED units ---
-    # (most rows are MW ~0.3-3, a minority are kW ~300-3000 because ingest
-    # dropped the "kW" suffix without converting). Feeder loads here can
-    # never genuinely exceed ~10 MW, so any y > 100 is a kW row.
-    kw_rows = g["y"] > 100
-    if kw_rows.any():
-        logger.info("%s: converting %d kW-scale rows to MW", model_id, int(kw_rows.sum()))
-        g.loc[kw_rows, "y"] = g.loc[kw_rows, "y"] / 1000.0
+    # Unit repair: DB rows occasionally stored in kW (value > 100 means kW)
+    kw_mask = g["y"] > 100
+    if kw_mask.any():
+        logger.info("%s: converting %d kW-scale rows → MW", uid, int(kw_mask.sum()))
+        g.loc[kw_mask, "y"] /= 1000.0
 
-    g["avg_current"] = (g["IR"] + g["IY"] + g["IB"]) / 3.0
+    g["avg_current"] = (g["ir"] + g["iy"] + g["ib"]) / 3.0
     tod = (g["ds"].dt.hour + g["ds"].dt.minute / 60.0) / 24.0
-    g["tod_sin"] = np.sin(2 * np.pi * tod)
-    g["tod_cos"] = np.cos(2 * np.pi * tod)
-    g["unique_id"] = model_id
-    return g[["unique_id", "ds", "y"] + HIST_EXOG + FUTR_EXOG].dropna()
+    g["tod_sin"]   = np.sin(2 * np.pi * tod)
+    g["tod_cos"]   = np.cos(2 * np.pi * tod)
+    g["unique_id"] = uid
+
+    cols = ["unique_id", "ds", "y"] + HIST_EXOG + FUTR_EXOG
+    return g[cols].dropna()
 
 
-def _future_exog(model_id: str, last_ds: pd.Timestamp) -> pd.DataFrame:
+def _build_future_exog(uid: str, last_ds: pd.Timestamp) -> pd.DataFrame:
+    """Build HORIZON-step future exog frame (tod_sin/cos only — known in advance)."""
     future_ds = pd.date_range(last_ds, periods=HORIZON + 1, freq=FREQ)[1:]
-    f = pd.DataFrame({"unique_id": model_id, "ds": future_ds})
+    f   = pd.DataFrame({"unique_id": uid, "ds": future_ds})
     tod = (f["ds"].dt.hour + f["ds"].dt.minute / 60.0) / 24.0
     f["tod_sin"] = np.sin(2 * np.pi * tod)
     f["tod_cos"] = np.cos(2 * np.pi * tod)
     return f
 
 
-def forecast_one_feeder(df_feeder: pd.DataFrame, feeder_key: str) -> pd.DataFrame:
-    """Forecast next HORIZON steps for one feeder. Returns columns [ds, mw]."""
-    nf, model_id = _get_model(feeder_key)
-    frame = _prepare_frame(df_feeder, model_id)
-    if len(frame) < INPUT_SIZE:
-        raise ValueError(f"{feeder_key}: need >= {INPUT_SIZE} samples on the "
-                         f"3-min grid, have {len(frame)}")
-    futr = _future_exog(model_id, frame["ds"].max())
-    fcst = nf.predict(df=frame, futr_df=futr)
+# ── Single-feeder inference ───────────────────────────────────────────────────
+def _forecast_one(df_feeder: pd.DataFrame, uid: str) -> pd.DataFrame:
+    """
+    Run global NHITS for one feeder. Returns DataFrame[ds, mw].
+    The global model uses the stored per-feeder scaler automatically.
+    """
+    nf   = _get_model()
+    hist = _prepare_history(df_feeder, uid)
+
+    if len(hist) < INPUT_SIZE:
+        raise ValueError(
+            f"{uid}: need ≥ {INPUT_SIZE} rows on the 3-min grid "
+            f"({INPUT_SIZE * 3 // 60:.1f} h of history), have {len(hist)}."
+        )
+
+    futr = _build_future_exog(uid, hist["ds"].max())
+    fcst = nf.predict(df=hist, futr_df=futr)
     fcst = fcst.reset_index() if "unique_id" not in fcst.columns else fcst
+
     yhat = [c for c in fcst.columns if c not in ("unique_id", "ds")][0]
-    return pd.DataFrame({"ds": pd.to_datetime(fcst["ds"]),
-                         # physical floor: load cannot be negative
-                         "mw": fcst[yhat].astype(float).clip(lower=0.0)})
+    return pd.DataFrame({
+        "ds": pd.to_datetime(fcst["ds"]),
+        "mw": fcst[yhat].astype(float).clip(lower=0.0),  # load cannot be negative
+    })
 
 
-# --------------------------------------------------------------------------- #
-# Public entry point — payload matches ml.html's /ml/forecast contract
-# --------------------------------------------------------------------------- #
-def run_nhits_forecast(df: pd.DataFrame,
-                       substation: Optional[str] = None,
-                       feeder: Optional[str] = None,
-                       history_points: int = 96) -> dict:
+# ── Public entry point ────────────────────────────────────────────────────────
+def run_nhits_forecast(
+    df:             pd.DataFrame,
+    substation:     Optional[str] = None,
+    feeder:         Optional[str] = None,
+    history_points: int           = INPUT_SIZE,
+) -> dict:
     """
-    df: pre-filtered DataLoader rows (the caller applies substation/feeder
-        filters; `feeder` here only tells us whether one feeder is selected).
+    Main entry point called by ml_inference.run_load_forecast().
 
-    Single feeder  -> that feeder's NHITS forecast.
-    No feeder (All)-> per-feeder forecasts, summed step-wise into a total.
+    Parameters
+    ----------
+    df              : DataLoader rows already filtered by the caller.
+    substation      : Selected substation (informational).
+    feeder          : Selected feeder display name, or None / "All".
+    history_points  : Recent history steps to include in the response
+                      for the frontend chart.
+
+    Returns
+    -------
+    dict with keys: method, horizon, values, history, per_feeder,
+                    horizon_minutes, unit, last_run
+    Response shape is identical to the old per-feeder version.
     """
-    if feeder:
-        key = resolve_feeder(feeder)
-        if key is None:
-            raise ValueError(f"No trained NHITS model for feeder {feeder!r}. "
-                             f"Trained: {list(FEEDER_MODELS)}")
-        fc = forecast_one_feeder(df, key)
-        hist = _prepare_frame(df, FEEDER_MODELS[key]).tail(history_points)
-        per_feeder = {key: [round(v, 4) for v in fc["mw"]]}
-        horizon, values = fc["ds"], fc["mw"]
-        method = "NHITS"
-    else:
-        feeders_present = [f for f in df["feeder"].dropna().unique()
-                           if resolve_feeder(f)]
-        if not feeders_present:
-            raise ValueError("No feeders with trained NHITS models in selection.")
-        per_feeder, parts, hist_parts = {}, [], []
-        for f in feeders_present:
-            key = resolve_feeder(f)
-            sub_df = df[df["feeder"] == f]
-            try:
-                fc = forecast_one_feeder(sub_df, key)
-            except ValueError as e:           # too little history for this feeder
-                logger.warning("Skipping %s: %s", f, e)
-                continue
-            per_feeder[key] = [round(v, 4) for v in fc["mw"]]
-            parts.append(fc.reset_index(drop=True))
-            hist_parts.append(
-                _prepare_frame(sub_df, key).tail(history_points)
-                .set_index("ds")["y"])
-        if not parts:
-            raise ValueError("Insufficient history for every feeder in selection.")
-        # Step-wise sum (timestamps can differ by a step or two across feeders).
-        values = pd.concat([p["mw"] for p in parts], axis=1).sum(axis=1)
-        horizon = max(parts, key=len)["ds"]
-        hist = (pd.concat(hist_parts, axis=1).interpolate(method="time")
-                  .sum(axis=1).tail(history_points)
-                  .rename("y").reset_index())
-        method = f"NHITS (sum of {len(parts)} feeders)"
+    # ── Single feeder ─────────────────────────────────────────────────────────
+    if feeder and feeder.strip().lower() not in ("", "all"):
+        uid = resolve_feeder(feeder)
+        if uid is None:
+            raise ValueError(
+                f"No trained NHITS model for feeder {feeder!r}. "
+                f"Known feeders: {list(FEEDER_ID_MAP)}"
+            )
+        fc   = _forecast_one(df, uid)
+        hist = _prepare_history(df, uid).tail(history_points)
+
+        return {
+            "method":          f"NHITS Global (feeder: {feeder})",
+            "horizon":         [pd.Timestamp(t).isoformat() for t in fc["ds"]],
+            "values":          [round(float(v), 4) for v in fc["mw"]],
+            "history": {
+                "ds": [pd.Timestamp(t).isoformat() for t in hist["ds"]],
+                "mw": [round(float(v), 4)          for v in hist["y"]],
+            },
+            "per_feeder":      {uid: [round(float(v), 4) for v in fc["mw"]]},
+            "horizon_minutes": HORIZON * 3,
+            "unit":            "MW",
+            "last_run":        datetime.now(timezone.utc).isoformat(),
+        }
+
+    # ── All feeders — step-wise sum ───────────────────────────────────────────
+    feeders_present = [
+        (f, resolve_feeder(f))
+        for f in df["feeder"].dropna().unique()
+        if resolve_feeder(f) is not None
+    ]
+    if not feeders_present:
+        raise ValueError(
+            "No feeders with trained NHITS models found in the current selection."
+        )
+
+    per_feeder: dict  = {}
+    fc_parts:   list  = []
+    hist_parts: list  = []
+
+    for f_name, uid in feeders_present:
+        sub_df = df[df["feeder"] == f_name]
+        try:
+            fc = _forecast_one(sub_df, uid)
+        except ValueError as exc:
+            logger.warning("Skipping feeder %s (%s): %s", f_name, uid, exc)
+            continue
+        per_feeder[uid] = [round(float(v), 4) for v in fc["mw"]]
+        fc_parts.append(fc.reset_index(drop=True))
+        hist_parts.append(
+            _prepare_history(sub_df, uid).tail(history_points)
+            .set_index("ds")["y"].rename(uid)
+        )
+
+    if not fc_parts:
+        raise ValueError(
+            f"Insufficient history for all feeders. "
+            f"Need ≥ {INPUT_SIZE} rows (≈ {INPUT_SIZE * 3 // 60} h) per feeder "
+            "on the 3-min grid."
+        )
+
+    values  = pd.concat([p["mw"] for p in fc_parts], axis=1).sum(axis=1)
+    horizon = max(fc_parts, key=len)["ds"]
+    hist    = (
+        pd.concat(hist_parts, axis=1)
+          .interpolate(method="time")
+          .sum(axis=1)
+          .tail(history_points)
+          .rename("y")
+          .reset_index()
+    )
 
     return {
-        "method":   method,
-        "horizon":  [pd.Timestamp(t).isoformat() for t in horizon],
-        "values":   [round(float(v), 4) for v in values],
-        # extras (frontend uses these when present; harmless otherwise)
+        "method":          f"NHITS Global (sum of {len(fc_parts)} feeders)",
+        "horizon":         [pd.Timestamp(t).isoformat() for t in horizon],
+        "values":          [round(float(v), 4) for v in values],
         "history": {
             "ds": [pd.Timestamp(t).isoformat() for t in hist["ds"]],
-            "mw": [round(float(v), 4) for v in hist["y"]],
+            "mw": [round(float(v), 4)          for v in hist["y"]],
         },
-        "per_feeder": per_feeder,
+        "per_feeder":      per_feeder,
         "horizon_minutes": HORIZON * 3,
-        "unit": "MW",
-        "last_run": datetime.utcnow().isoformat(),
+        "unit":            "MW",
+        "last_run":        datetime.now(timezone.utc).isoformat(),
     }

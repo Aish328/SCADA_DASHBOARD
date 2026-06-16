@@ -33,17 +33,17 @@ FAULT_COLORS = {
 
 # Voltage thresholds
 # Only trigger at extreme voltage levels
-V_SAG_LIMIT = 0.05
-V_SURGE_LIMIT = 0.95
+V_SAG_LIMIT = 0.25
+V_SURGE_LIMIT = 0.75
 
 # Current imbalance threshold
 IMBAL_THRESHOLD = 0.04
 
 # Load thresholds
-OVERLOAD_LIMIT = 0.15
+OVERLOAD_LIMIT = 0.70
 
 # Transformer stress thresholds
-XFMR_LOAD_LIM = 0.20
+XFMR_LOAD_LIM = 0.50
 XFMR_CURR_LIM = 0.75
 
 # Fault persistence

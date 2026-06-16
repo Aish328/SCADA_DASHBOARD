@@ -166,6 +166,67 @@
       background: rgba(0,212,255,.08); color: var(--accent);
       border: 1px solid rgba(0,212,255,.2); border-radius: 2px;
     }
+
+    /* ── Forecast panel (dedicated section) ─────────────────── */
+    .forecast-panel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 0; overflow: hidden;
+    }
+    .forecast-toolbar {
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      padding: 12px 20px; background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+    .forecast-toolbar label {
+      font-size: 10px; letter-spacing: 2px; color: var(--muted);
+      font-family: var(--font-mono); white-space: nowrap;
+    }
+    .fc-select {
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 4px 10px; font-family: var(--font-mono); font-size: 11px;
+      cursor: pointer; min-width: 180px;
+    }
+    .fc-select:focus { outline: none; border-color: var(--accent); }
+    .fc-run-btn {
+      font-family: var(--font-ui); font-size: 11px; letter-spacing: 1.5px;
+      font-weight: 700; padding: 5px 16px;
+      border: 1px solid var(--accent); background: rgba(0,212,255,.1);
+      color: var(--accent); cursor: pointer; border-radius: var(--radius);
+      transition: all .2s; white-space: nowrap;
+    }
+    .fc-run-btn:hover  { background: rgba(0,212,255,.22); }
+    .fc-run-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .fc-meta {
+      margin-left: auto; display: flex; align-items: center; gap: 14px;
+      font-family: var(--font-mono); font-size: 10px; color: var(--muted);
+    }
+    .fc-meta-val { color: var(--accent); }
+    .forecast-body { padding: 16px 20px; }
+    .forecast-kpi-row {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+      margin-bottom: 16px;
+    }
+    .fc-kpi {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 10px 14px;
+    }
+    .fc-kpi-label { font-size: 9px; letter-spacing: 2px; color: var(--muted); font-family: var(--font-mono); }
+    .fc-kpi-value { font-size: 22px; font-weight: 700; color: var(--text); font-family: var(--font-mono); line-height: 1.2; }
+    .fc-kpi-unit  { font-size: 10px; color: var(--muted); }
+    .forecast-chart-wrap { position: relative; height: 320px; }
+    .per-feeder-row {
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+      margin-top: 14px;
+    }
+    .pf-chip {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; padding: 8px 10px; text-align: center;
+    }
+    .pf-chip-id    { font-size: 9px; color: var(--muted); font-family: var(--font-mono); letter-spacing: 1px; }
+    .pf-chip-name  { font-size: 10px; color: var(--text); margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pf-chip-value { font-size: 16px; font-weight: 700; color: var(--accent); font-family: var(--font-mono); }
+    .pf-chip-unit  { font-size: 9px; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -286,18 +347,64 @@
     </div>
   </div>
 
-  <!-- ROW 4: Load forecast -->
+  <!-- ROW 4: Load forecast — dedicated panel with feeder selector -->
   <div class="section-header">
-    <div class="section-tag">NHITS · ACTIVE LOAD FORECAST (NEXT 1 HOUR)</div>
+    <div class="section-tag">NHITS GLOBAL · ACTIVE LOAD FORECAST</div>
     <div class="section-line"></div>
   </div>
-  <div class="card">
-    <div class="card-header">
-      <div class="card-title">ACTIVE LOAD — HISTORICAL + FORECAST</div>
-      <div class="method-badge" id="forecastMethod">—</div>
+
+  <div class="forecast-panel">
+
+    <!-- Toolbar -->
+    <div class="forecast-toolbar">
+      <label>SUBSTATION</label>
+      <select class="fc-select" id="fcSub">
+        <option value="">ALL SUBSTATIONS</option>
+      </select>
+      <label>FEEDER</label>
+      <select class="fc-select" id="fcFeeder">
+        <option value="">ALL FEEDERS (SUM)</option>
+      </select>
+      <button class="fc-run-btn" id="fcRunBtn" onclick="runForecast()">⚡ FORECAST</button>
+      <div class="fc-meta">
+        <span>METHOD: <span class="fc-meta-val" id="fcMethod">—</span></span>
+        <span>HORIZON: <span class="fc-meta-val" id="fcHorizon">60 MIN</span></span>
+        <span>LAST RUN: <span class="fc-meta-val" id="fcLastRun">—</span></span>
+      </div>
     </div>
-    <div class="chart-wrap tall" id="forecastWrap">
-      <div class="loading"><div class="spinner"></div>LOADING…</div>
+
+    <!-- KPI chips -->
+    <div class="forecast-body">
+      <div class="forecast-kpi-row">
+        <div class="fc-kpi">
+          <div class="fc-kpi-label">CURRENT LOAD</div>
+          <div class="fc-kpi-value" id="fcCurrent">—</div>
+          <div class="fc-kpi-unit">MW  (latest actual)</div>
+        </div>
+        <div class="fc-kpi">
+          <div class="fc-kpi-label">FORECAST PEAK</div>
+          <div class="fc-kpi-value" id="fcPeak">—</div>
+          <div class="fc-kpi-unit">MW  (next 60 min)</div>
+        </div>
+        <div class="fc-kpi">
+          <div class="fc-kpi-label">FORECAST AVG</div>
+          <div class="fc-kpi-value" id="fcAvg">—</div>
+          <div class="fc-kpi-unit">MW  (next 60 min)</div>
+        </div>
+        <div class="fc-kpi">
+          <div class="fc-kpi-label">TREND</div>
+          <div class="fc-kpi-value" id="fcTrend">—</div>
+          <div class="fc-kpi-unit">vs current load</div>
+        </div>
+      </div>
+
+      <!-- History + Forecast chart -->
+      <div class="forecast-chart-wrap" id="forecastWrap">
+        <div class="loading"><div class="spinner"></div>SELECT A FEEDER AND CLICK FORECAST</div>
+      </div>
+
+      <!-- Per-feeder breakdown (shown when All Feeders selected) -->
+      <div class="per-feeder-row" id="perFeederRow" style="display:none"></div>
     </div>
   </div>
 
@@ -654,87 +761,243 @@ function chartOpts(yLabel) {
 }
 
 // =========================================================
-// Render: Forecast chart
+// Forecast panel — feeder selectors
 // =========================================================
-function renderForecastChart(seriesData, forecastData) {
-  document.getElementById('forecastMethod').textContent =
-    (forecastData.method || '').replace('_', ' ').toUpperCase();
+let _fcFilters = { substation: null, feeder: null };
+let _fcFiltersData = null;   // raw /filters/ response, cached
 
-  const histLoad = seriesData?.v_avg
-    ? null
-    : (seriesData?.categories?.length
-        ? seriesData.categories.map(() => null)
-        : null);
+async function initForecastFilters() {
+  if (_fcFiltersData) return;          // already loaded
+  try {
+    const r = await fetch('/filters/');
+    _fcFiltersData = await r.json();
+  } catch (e) {
+    console.warn('Could not load /filters/', e);
+    return;
+  }
+  const subSel = document.getElementById('fcSub');
+  const fdSel  = document.getElementById('fcFeeder');
 
-  // Prefer real Active Load history (MW) shipped in the NHITS payload;
-  // fall back to the old i_avg proxy from /data/series.
-  let histCats = [];
-  let histVals = [];
-  let histLabel = 'Historical (avg current proxy)';
+  // Populate substations
+  (_fcFiltersData.substations || []).forEach(s => {
+    const o = document.createElement('option');
+    o.value = s; o.textContent = s;
+    subSel.appendChild(o);
+  });
 
-  if (forecastData.history && forecastData.history.mw && forecastData.history.mw.length) {
-    histCats = forecastData.history.ds.map(t => t.slice(11, 16));
-    histVals = forecastData.history.mw;
-    histLabel = 'Actual Load (MW)';
-  } else if (seriesData && seriesData.categories) {
-    const step = Math.max(1, Math.floor(seriesData.categories.length / 200));
-    histCats = seriesData.categories.filter((_, i) => i % step === 0);
-    const loadKey = seriesData.i_avg ? 'i_avg' : null;
-    histVals = loadKey
-      ? seriesData[loadKey].filter((_, i) => i % step === 0)
-      : histCats.map(() => null);
+  const fillFeeders = () => {
+    const all   = _fcFiltersData.feeders_by_substation || {};
+    const list  = _fcFilters.substation
+      ? (all[_fcFilters.substation] || [])
+      : Object.values(all).flat();
+    fdSel.innerHTML = '<option value="">ALL FEEDERS (SUM)</option>' +
+      list.map(f => `<option value="${f}">${f}</option>`).join('');
+    _fcFilters.feeder = null;
+  };
+
+  fillFeeders();
+
+  subSel.addEventListener('change', () => {
+    _fcFilters.substation = subSel.value || null;
+    fillFeeders();
+  });
+  fdSel.addEventListener('change', () => {
+    _fcFilters.feeder = fdSel.value || null;
+  });
+}
+
+// =========================================================
+// Render: Forecast chart (history synced with forecast)
+// =========================================================
+function renderForecastChart(forecastData) {
+  if (!forecastData || forecastData.error) {
+    showErr('forecastWrap', forecastData?.error || 'Forecast unavailable.');
+    return;
   }
 
-  const forecastCats = (forecastData.horizon || []).map(t => t.length > 16 ? t.slice(11, 16) : t);
-  const forecastVals = forecastData.values  || [];
+  // ── Method + meta ──────────────────────────────────────
+  document.getElementById('fcMethod').textContent =
+    (forecastData.method || '—').toUpperCase();
+  document.getElementById('fcLastRun').textContent =
+    forecastData.last_run
+      ? new Date(forecastData.last_run).toLocaleTimeString('en-GB')
+      : '—';
+  document.getElementById('fcHorizon').textContent =
+    (forecastData.horizon_minutes || 60) + ' MIN';
 
-  const allCats = [...histCats, ...forecastCats];
-  const histLine = [...histVals, ...forecastCats.map(() => null)];
-  const forecastLine = [
-    ...histCats.map(() => null),
-    ...forecastVals
-  ];
+  // ── KPI chips ──────────────────────────────────────────
+  const hist   = forecastData.history || {};
+  const mwHist = hist.mw || [];
+  const mwFcst = forecastData.values  || [];
 
+  const currentLoad = mwHist.length ? mwHist[mwHist.length - 1] : null;
+  const peak        = mwFcst.length ? Math.max(...mwFcst) : null;
+  const avg         = mwFcst.length ? (mwFcst.reduce((a, b) => a + b, 0) / mwFcst.length) : null;
+  const trend       = (currentLoad != null && peak != null)
+    ? ((peak - currentLoad) / currentLoad * 100)
+    : null;
+
+  document.getElementById('fcCurrent').textContent = currentLoad != null ? currentLoad.toFixed(3) : '—';
+  document.getElementById('fcPeak').textContent    = peak != null ? peak.toFixed(3) : '—';
+  document.getElementById('fcAvg').textContent     = avg  != null ? avg.toFixed(3)  : '—';
+  document.getElementById('fcTrend').textContent   = trend != null
+    ? (trend >= 0 ? '▲ +' : '▼ ') + trend.toFixed(1) + '%'
+    : '—';
+  const trendEl = document.getElementById('fcTrend');
+  if (trend != null) {
+    trendEl.style.color = trend > 5 ? 'var(--danger)' : trend < -5 ? 'var(--ok)' : 'var(--warn)';
+  }
+
+  // ── Build unified time-axis labels ─────────────────────
+  // History and forecast share the same x-axis; a vertical line
+  // marks the boundary between actual and predicted.
+  const histLabels  = (hist.ds  || []).map(t => t.slice(11, 16));
+  const fcstLabels  = (forecastData.horizon || []).map(t => t.slice(11, 16));
+  const allLabels   = [...histLabels, ...fcstLabels];
+
+  // Null-pad so both datasets span the full x-axis
+  const histLine = [...mwHist, ...Array(fcstLabels.length).fill(null)];
+  const fcstLine = [...Array(histLabels.length).fill(null), ...mwFcst];
+
+  // ── Render chart ───────────────────────────────────────
+  destroyChart('forecast');
   const c = makeCanvas('forecastWrap');
   charts['forecast'] = new Chart(c, {
     type: 'line',
     data: {
-      labels: allCats,
+      labels: allLabels,
       datasets: [
         {
-          label: histLabel,
-          data: histLine,
-          borderColor: '#3498db',
-          borderWidth: 1.5,
-          pointRadius: 0,
-          tension: 0.3,
+          label: 'Actual Load (MW)',
+          data:  histLine,
+          borderColor:  '#3498db',
+          borderWidth:  1.8,
+          pointRadius:  0,
+          tension:      0.3,
           fill: false,
         },
         {
           label: 'NHITS Forecast (MW)',
-          data: forecastLine,
-          borderColor: '#00d4ff',
-          borderWidth: 2.5,
-          borderDash: [6, 4],
-          pointRadius: 5,
+          data:  fcstLine,
+          borderColor:       '#00d4ff',
+          borderWidth:       2.5,
+          borderDash:        [7, 4],
+          pointRadius:       4,
           pointBackgroundColor: '#00d4ff',
-          tension: 0.3,
-          fill: false,
+          tension:           0.3,
+          fill: {
+            target: 'origin',
+            above:  'rgba(0,212,255,0.05)',
+          },
         }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { labels: { color: '#c8dff0', font: { family: 'Rajdhani', size: 12 }, boxWidth: 10 } }
+        legend: {
+          labels: { color: '#c8dff0', font: { family: 'Rajdhani', size: 12 }, boxWidth: 10 }
+        },
+        annotation: {
+          annotations: {
+            boundary: {
+              type: 'line',
+              xMin: histLabels.length - 1,
+              xMax: histLabels.length - 1,
+              borderColor: 'rgba(255,255,255,0.18)',
+              borderWidth: 1.5,
+              borderDash:  [5, 5],
+              label: {
+                content:  'NOW →',
+                display:  true,
+                position: 'start',
+                color:    'rgba(255,255,255,0.35)',
+                font:     { family: 'Share Tech Mono', size: 9 },
+              }
+            }
+          }
+        }
       },
       scales: {
-        x: { ticks: { color: '#4a6a85', maxTicksLimit: 10, font: { family: 'Share Tech Mono', size: 10 } }, grid: { color: '#1a2d42' } },
-        y: { ticks: { color: '#4a6a85', font: { family: 'Share Tech Mono', size: 10 } }, grid: { color: '#1a2d42' } }
+        x: {
+          ticks: {
+            color: '#4a6a85', maxTicksLimit: 12,
+            font: { family: 'Share Tech Mono', size: 10 }
+          },
+          grid: { color: '#1a2d42' }
+        },
+        y: {
+          title: { display: true, text: 'Active Load (MW)', color: '#4a6a85', font: { family: 'Share Tech Mono', size: 10 } },
+          ticks: { color: '#4a6a85', font: { family: 'Share Tech Mono', size: 10 } },
+          grid:  { color: '#1a2d42' }
+        }
       }
     }
   });
+
+  // ── Per-feeder chips (only when All Feeders) ───────────
+  const pfRow = document.getElementById('perFeederRow');
+  const pf    = forecastData.per_feeder || {};
+  const pfKeys = Object.keys(pf);
+  if (pfKeys.length > 1) {
+    const ID_NAME = {
+      EP_FD01: '11KV LUMAX', EP_FD02: 'RMU1',
+      ML_FD01: '11KV BHOSALE NAGAR', ML_FD02: '11KV KUBERA',
+      ML_FD03: '11KV MALWADI HADAPSAR'
+    };
+    pfRow.style.display = 'grid';
+    pfRow.innerHTML = pfKeys.map(uid => {
+      const vals = pf[uid];
+      const peak = vals.length ? Math.max(...vals).toFixed(3) : '—';
+      return `<div class="pf-chip">
+        <div class="pf-chip-id">${uid}</div>
+        <div class="pf-chip-name">${ID_NAME[uid] || uid}</div>
+        <div class="pf-chip-value">${peak}</div>
+        <div class="pf-chip-unit">MW peak</div>
+      </div>`;
+    }).join('');
+  } else {
+    pfRow.style.display = 'none';
+  }
 }
+
+// =========================================================
+// Run forecast on demand (called by ⚡ FORECAST button)
+// =========================================================
+async function runForecast() {
+  const btn = document.getElementById('fcRunBtn');
+  btn.disabled  = true;
+  btn.textContent = '⟳ RUNNING…';
+
+  const wrap = document.getElementById('forecastWrap');
+  wrap.innerHTML = '<div class="loading"><div class="spinner"></div>FORECASTING…</div>';
+  document.getElementById('perFeederRow').style.display = 'none';
+
+  const params = new URLSearchParams();
+  if (_fcFilters.substation) params.set('substation', _fcFilters.substation);
+  if (_fcFilters.feeder)     params.set('feeder',     _fcFilters.feeder);
+  const qs = params.toString() ? '?' + params.toString() : '';
+
+  try {
+    const r = await fetch(`/ml/forecast${qs}`);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+      throw new Error(err.detail || err.error || `HTTP ${r.status}`);
+    }
+    const data = await r.json();
+    renderForecastChart(data);
+  } catch (e) {
+    showErr('forecastWrap', 'Forecast failed: ' + e.message);
+    console.error('Forecast error:', e);
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = '⚡ FORECAST';
+  }
+}
+
+// ── Keep old refreshForecast alias so loadAll() still works ──
+async function refreshForecast() { /* forecast is now on-demand only */ }
 
 // =========================================================
 // Summary tiles
@@ -809,11 +1072,8 @@ async function loadAll() {
     setStatus('live', 'ML SYSTEM ONLINE', anomData.summary?.last_run);
   }
 
-  if (forecastData) {
-    try { renderForecastChart(seriesData, forecastData); } catch(e) { showErr('forecastWrap', 'Render error: ' + e.message); }
-  } else {
-    showErr('forecastWrap', 'Forecast unavailable — NHITS models may not be loaded.\nCheck server logs.');
-  }
+  // Forecast is on-demand (⚡ FORECAST button) — not auto-run with loadAll.
+  // This keeps the anomaly and forecast sections independent.
 }
 
 // =========================================================
@@ -832,6 +1092,7 @@ async function pollStatus() {
 
 // Initial load
 initMlFilters().then(loadAll);
+initForecastFilters();
 
 // Refresh data every 15 minutes
 setInterval(loadAll, 15 * 60 * 1000);

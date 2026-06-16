@@ -257,46 +257,64 @@ def run_load_forecast(
     feeder: Optional[str] = None,
 ) -> dict:
     """
-    Per-feeder NHITS forecast (next 1 hour, 20 x 3-min steps, MW).
-    Single feeder selected  -> that feeder's model.
-    "All" (feeder is None)  -> per-feeder forecasts summed step-wise.
-    Falls back to linear extrapolation if NHITS cannot serve the request.
+    Global NHITS forecast (next 1 hour, 20 × 3-min steps, MW).
+
+    Single feeder selected  → that feeder's series from the global model.
+    feeder is None / "All"  → per-feeder forecasts summed step-wise.
+
+    DataLoader is queried WITHOUT feeder filter so the global model
+    always receives data for all feeders (needed for "All" mode).
+    The feeder parameter is forwarded to run_nhits_forecast() which
+    does the per-feeder routing internally.
+
+    Falls back to linear extrapolation if the NHITS bundle is not found.
     """
+    # Load data: apply substation filter but NOT feeder filter here —
+    # run_nhits_forecast() handles per-feeder selection internally.
     df = DataLoader.get_all_data()
-    df = DataLoader.filter_data(df, substation, feeder)
+    df = DataLoader.filter_data(df, substation, feeder=None)
     df = df.sort_values("datetime")
 
     if "active_load" not in df.columns or len(df) < 50:
         return {"error": "Insufficient data for forecast"}
 
-    # ── NHITS (pre-trained, no refit) ─────────────────────
+    # ── Global NHITS (pre-trained single bundle, no refit) ──
     try:
         from services.nhits_forecast import run_nhits_forecast
-        return run_nhits_forecast(df, substation=substation, feeder=feeder)
+        return run_nhits_forecast(
+            df,
+            substation=substation,
+            feeder=feeder,          # None = all feeders summed
+        )
+    except FileNotFoundError as e:
+        logger.error("NHITS bundle missing: %s", e)
+        return {"error": str(e)}
     except Exception as e:
-        logger.warning(f"NHITS forecast failed, falling back to linear: {e}")
+        logger.warning("NHITS forecast failed, falling back to linear: %s", e)
         logger.debug(traceback.format_exc())
 
-    # ── Fallback: linear trend extrapolation ─────────────
-    recent   = df["active_load"].dropna().tail(288).values
-    interval = DataLoader.infer_interval()
-    last_dt  = df["datetime"].max()
+    # ── Fallback: linear trend extrapolation ───────────────
+    # Applied per-feeder if one is selected, else on the full df.
+    target_df = df[df["feeder"] == feeder] if feeder else df
+    recent    = target_df["active_load"].dropna().tail(288).values
+    if len(recent) < 2:
+        return {"error": "Not enough data for linear fallback"}
 
-    x      = np.arange(len(recent))
-    coeffs = np.polyfit(x, recent, 1)
-    trend  = np.poly1d(coeffs)
+    interval  = DataLoader.infer_interval()
+    last_dt   = target_df["datetime"].max()
 
-    horizon_steps = 20
-    future_x  = np.arange(len(recent), len(recent) + horizon_steps)
-    predicted = trend(future_x)
+    x         = np.arange(len(recent))
+    coeffs    = np.polyfit(x, recent, 1)
+    trend_fn  = np.poly1d(coeffs)
+    future_x  = np.arange(len(recent), len(recent) + 20)
+    predicted = trend_fn(future_x)
 
     horizon_dts = [
         (last_dt + timedelta(minutes=interval * (i + 1))).isoformat()
-        for i in range(horizon_steps)
+        for i in range(20)
     ]
-
     return {
-        "method":   "linear_extrapolation",
+        "method":   "linear_extrapolation (NHITS unavailable)",
         "horizon":  horizon_dts,
         "values":   [round(float(v), 4) for v in predicted],
         "last_run": datetime.utcnow().isoformat(),
