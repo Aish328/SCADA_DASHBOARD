@@ -97,6 +97,70 @@
     }
     .fc-run-btn:hover  { background: rgba(0,212,255,.22); }
     .fc-run-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* ── Export button ───────────────────────────────────── */
+    .export-btn {
+      font-family: var(--font-ui); font-size: 11px; letter-spacing: 1.5px;
+      font-weight: 700; padding: 5px 16px;
+      border: 1px solid var(--accent2); background: rgba(123,94,248,.1);
+      color: var(--accent2); cursor: pointer; border-radius: var(--radius);
+      transition: all .2s; white-space: nowrap;
+    }
+    .export-btn:hover    { background: rgba(123,94,248,.22); }
+    .export-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* ── Data table ──────────────────────────────────────── */
+    .data-table-section {
+      margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px;
+    }
+    .data-table-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px; flex-wrap: wrap; gap: 6px;
+    }
+    .data-table-title {
+      font-size: 10px; letter-spacing: 2px; font-weight: 700;
+      color: var(--text); font-family: var(--font-mono);
+    }
+    .table-wrap {
+      max-height: 320px; overflow-y: auto;
+      border: 1px solid var(--border); border-radius: var(--radius);
+    }
+    .table-wrap::-webkit-scrollbar { width: 6px; }
+    .table-wrap::-webkit-scrollbar-track { background: var(--surface2); }
+    .table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .table-wrap::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+    .fc-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; }
+    .fc-table thead { position: sticky; top: 0; z-index: 2; }
+    .fc-table th {
+      background: var(--surface2); padding: 8px 12px; text-align: left;
+      font-size: 9px; letter-spacing: 2px; color: var(--muted); font-weight: 400;
+      border-bottom: 1px solid var(--border); white-space: nowrap;
+    }
+    .fc-table th.right { text-align: right; }
+    .fc-table td { padding: 7px 12px; border-bottom: 1px solid rgba(26,45,66,.4); vertical-align: middle; }
+    .fc-table tr:last-child td { border-bottom: none; }
+    .fc-table tr.fcst-row { background: rgba(0,212,255,.03); }
+    .fc-table tr:hover td { background: rgba(255,255,255,.03); }
+    .td-time   { color: var(--muted); white-space: nowrap; }
+    .td-actual { color: #3498db; text-align: right; }
+    .td-fcst   { color: var(--accent); text-align: right; }
+    .td-err    { text-align: right; font-weight: 600; }
+    .td-center { text-align: center; }
+    .badge-actual {
+      display: inline-block; font-size: 8px; letter-spacing: 1px; padding: 1px 6px;
+      border-radius: 2px; background: rgba(52,152,219,.15); color: #3498db;
+      border: 1px solid rgba(52,152,219,.3);
+    }
+    .badge-fcst {
+      display: inline-block; font-size: 8px; letter-spacing: 1px; padding: 1px 6px;
+      border-radius: 2px; background: rgba(0,212,255,.1); color: var(--accent);
+      border: 1px solid rgba(0,212,255,.25);
+    }
+    .err-ok     { color: var(--ok); }
+    .err-warn   { color: var(--warn); }
+    .err-high   { color: #e67e22; }
+    .err-danger { color: var(--danger); }
+    .err-na     { color: var(--muted); }
     .fc-meta {
       margin-left: auto; display: flex; align-items: center; gap: 14px;
       font-family: var(--font-mono); font-size: 10px; color: var(--muted);
@@ -106,7 +170,7 @@
     /* ── Forecast body ───────────────────────────────────── */
     .forecast-body { padding: 16px 20px; }
     .forecast-kpi-row {
-      display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px;
       margin-bottom: 16px;
     }
     .fc-kpi {
@@ -180,6 +244,7 @@
         <option value="">ALL FEEDERS (SUM)</option>
       </select>
       <button class="fc-run-btn" id="fcRunBtn" onclick="runForecast()">⚡ FORECAST</button>
+      <button class="export-btn" id="exportBtn" onclick="exportCSV()" disabled>↓ EXPORT CSV</button>
       <div class="fc-meta">
         <span>METHOD: <span class="fc-meta-val" id="fcMethod">—</span></span>
         <span>HORIZON: <span class="fc-meta-val" id="fcHorizon">60 MIN</span></span>
@@ -210,6 +275,11 @@
           <div class="fc-kpi-value" id="fcTrend">—</div>
           <div class="fc-kpi-unit">vs current load</div>
         </div>
+        <div class="fc-kpi">
+          <div class="fc-kpi-label">MAPE (HIST OVERLAP)</div>
+          <div class="fc-kpi-value" id="fcMape">—</div>
+          <div class="fc-kpi-unit">% mean abs error</div>
+        </div>
       </div>
 
       <!-- History + Forecast chart -->
@@ -219,6 +289,37 @@
 
       <!-- Per-feeder breakdown -->
       <div class="per-feeder-row" id="perFeederRow" style="display:none"></div>
+
+      <!-- Error % data table -->
+      <div class="data-table-section" id="dataTableSection" style="display:none">
+        <div class="data-table-header">
+          <div class="data-table-title">FORECAST DATA · ERROR ANALYSIS</div>
+          <div style="font-family:var(--font-mono);font-size:9px;color:var(--muted);">
+            ERROR % = |ACTUAL − FORECAST| / ACTUAL × 100 &nbsp;·&nbsp;
+            <span class="err-ok">■</span> &lt;2%&nbsp;
+            <span class="err-warn">■</span> 2–5%&nbsp;
+            <span class="err-high">■</span> 5–10%&nbsp;
+            <span class="err-danger">■</span> &gt;10%
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="fc-table" id="fcDataTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>TIMESTAMP</th>
+                <th class="right">ACTUAL (MW)</th>
+                <th class="right">FORECAST (MW)</th>
+                <th class="right">ABS ERR (MW)</th>
+                <th class="right">ERROR %</th>
+                <th style="text-align:center">TYPE</th>
+              </tr>
+            </thead>
+            <tbody id="fcTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -250,6 +351,8 @@ function makeCanvas(wrapId) {
 // ── Filter state ─────────────────────────────────────────
 let _fcFilters = { substation: null, feeder: null };
 let _fcFiltersData = null;
+// Holds last API response — used by exportCSV()
+let _lastForecastData = null;
 
 async function initForecastFilters() {
   try {
@@ -297,6 +400,86 @@ function showErr(wrapId, msg) {
   </div>`;
 }
 
+// ── Error % helpers ───────────────────────────────────────
+function errClass(pct) {
+  if (pct === null) return 'err-na';
+  if (pct < 2)   return 'err-ok';
+  if (pct < 5)   return 'err-warn';
+  if (pct < 10)  return 'err-high';
+  return 'err-danger';
+}
+function errLabel(pct) {
+  return pct === null ? '—' : pct.toFixed(2) + '%';
+}
+
+// ── Build unified table rows ──────────────────────────────
+function buildTableRows(forecastData) {
+  const hist   = forecastData.history || {};
+  const histDs = hist.ds  || [];
+  const histMw = hist.mw  || [];
+  const fcstDs = forecastData.horizon || [];
+  const fcstMw = forecastData.values  || [];
+  const rows   = [];
+  histDs.forEach((ts, i) => {
+    rows.push({ ts, actual: histMw[i] ?? null, forecast: null, absErr: null, errPct: null, type: 'ACTUAL' });
+  });
+  fcstDs.forEach((ts, i) => {
+    rows.push({ ts, actual: null, forecast: fcstMw[i] ?? null, absErr: null, errPct: null, type: 'FORECAST' });
+  });
+  return rows;
+}
+
+// ── Render data table ─────────────────────────────────────
+function renderDataTable(forecastData) {
+  const rows    = buildTableRows(forecastData);
+  const tbody   = document.getElementById('fcTableBody');
+  const section = document.getElementById('dataTableSection');
+  if (!rows.length) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+  tbody.innerHTML = rows.map((r, idx) => {
+    const isActual   = r.type === 'ACTUAL';
+    const actualCell = r.actual   != null ? r.actual.toFixed(4)   : '<span style="color:var(--muted)">—</span>';
+    const fcstCell   = r.forecast != null ? r.forecast.toFixed(4) : '<span style="color:var(--muted)">—</span>';
+    const absCell    = r.absErr   != null ? r.absErr.toFixed(4)   : '<span style="color:var(--muted)">—</span>';
+    const errCell    = `<span class="${errClass(r.errPct)}">${errLabel(r.errPct)}</span>`;
+    const badge      = isActual
+      ? '<span class="badge-actual">ACTUAL</span>'
+      : '<span class="badge-fcst">FORECAST</span>';
+    const ts = r.ts.slice(0, 19).replace('T', ' ');
+    return `<tr class="${isActual ? '' : 'fcst-row'}">
+      <td class="td-time" style="color:var(--muted)">${idx + 1}</td>
+      <td class="td-time">${ts}</td>
+      <td class="td-actual">${actualCell}</td>
+      <td class="td-fcst">${fcstCell}</td>
+      <td style="text-align:right;color:var(--muted)">${absCell}</td>
+      <td class="td-err">${errCell}</td>
+      <td class="td-center">${badge}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── MAPE computation ──────────────────────────────────────
+function computeMape(forecastData) {
+  const fitted = forecastData.fitted_history || [];
+  const hist   = forecastData.history || {};
+  const histMw = hist.mw || [];
+  if (fitted.length && histMw.length) {
+    const n = Math.min(fitted.length, histMw.length);
+    let sum = 0, count = 0;
+    for (let i = 0; i < n; i++) {
+      const a = histMw[i], f = fitted[i];
+      if (a != null && f != null && Math.abs(a) > 1e-6) { sum += Math.abs(a - f) / Math.abs(a) * 100; count++; }
+    }
+    return count ? sum / count : null;
+  }
+  const fcstMw    = forecastData.values || [];
+  const lastActual = histMw.length ? histMw[histMw.length - 1] : null;
+  const firstFcst  = fcstMw.length  ? fcstMw[0]                : null;
+  if (lastActual != null && firstFcst != null && Math.abs(lastActual) > 1e-6)
+    return Math.abs(lastActual - firstFcst) / Math.abs(lastActual) * 100;
+  return null;
+}
+
 // ── Render forecast chart ─────────────────────────────────
 function renderForecastChart(forecastData) {
   if (!forecastData || forecastData.error) {
@@ -307,9 +490,7 @@ function renderForecastChart(forecastData) {
   document.getElementById('fcMethod').textContent =
     (forecastData.method || '—').toUpperCase();
   document.getElementById('fcLastRun').textContent =
-    forecastData.last_run
-      ? new Date(forecastData.last_run).toLocaleTimeString('en-GB')
-      : '—';
+    forecastData.last_run ? new Date(forecastData.last_run).toLocaleTimeString('en-GB') : '—';
   document.getElementById('fcHorizon').textContent =
     (forecastData.horizon_minutes || 60) + ' MIN';
 
@@ -324,20 +505,39 @@ function renderForecastChart(forecastData) {
     ? ((peak - currentLoad) / currentLoad * 100) : null;
 
   document.getElementById('fcCurrent').textContent = currentLoad != null ? currentLoad.toFixed(3) : '—';
-  document.getElementById('fcPeak').textContent    = peak != null ? peak.toFixed(3) : '—';
-  document.getElementById('fcAvg').textContent     = avg  != null ? avg.toFixed(3)  : '—';
+  document.getElementById('fcPeak').textContent    = peak  != null ? peak.toFixed(3)  : '—';
+  document.getElementById('fcAvg').textContent     = avg   != null ? avg.toFixed(3)   : '—';
   document.getElementById('fcTrend').textContent   = trend != null
     ? (trend >= 0 ? '▲ +' : '▼ ') + trend.toFixed(1) + '%' : '—';
   const trendEl = document.getElementById('fcTrend');
-  if (trend != null) {
+  if (trend != null)
     trendEl.style.color = trend > 5 ? 'var(--danger)' : trend < -5 ? 'var(--ok)' : 'var(--warn)';
+
+  // MAPE chip
+  const mape   = computeMape(forecastData);
+  const mapeEl = document.getElementById('fcMape');
+  if (mape != null) {
+    mapeEl.textContent  = mape.toFixed(2) + '%';
+    mapeEl.style.color  = mape < 2 ? 'var(--ok)' : mape < 5 ? 'var(--warn)' : 'var(--danger)';
+  } else {
+    mapeEl.textContent = '—';
+    mapeEl.style.color = '';
   }
 
   const histLabels = (hist.ds || []).map(t => t.slice(11, 16));
   const fcstLabels = (forecastData.horizon || []).map(t => t.slice(11, 16));
   const allLabels  = [...histLabels, ...fcstLabels];
-  const histLine   = [...mwHist, ...Array(fcstLabels.length).fill(null)];
-  const fcstLine   = [...Array(histLabels.length).fill(null), ...mwFcst];
+
+  // History line — null-pad right side
+  const histLine = [...mwHist, ...Array(fcstLabels.length).fill(null)];
+
+  // Junction stitch — forecast starts from last actual value so lines connect
+  const junctionVal = currentLoad ?? null;
+  const fcstLine = [
+    ...Array(Math.max(0, histLabels.length - 1)).fill(null),
+    junctionVal,
+    ...mwFcst
+  ];
 
   destroyChart('forecast');
   const c = makeCanvas('forecastWrap');
@@ -357,7 +557,9 @@ function renderForecastChart(forecastData) {
           data: fcstLine,
           borderColor: '#00d4ff', borderWidth: 2.5,
           borderDash: [7, 4],
-          pointRadius: 4, pointBackgroundColor: '#00d4ff',
+          spanGaps: false,
+          pointRadius: (ctx) => ctx.dataIndex < histLabels.length ? 0 : 4,
+          pointBackgroundColor: '#00d4ff',
           tension: 0.3,
           fill: { target: 'origin', above: 'rgba(0,212,255,0.05)' },
         }
@@ -404,7 +606,7 @@ function renderForecastChart(forecastData) {
   const pf     = forecastData.per_feeder || {};
   const pfKeys = Object.keys(pf);
   const ID_NAME = {
-    EP_FD01: '11KV LUMAX',        EP_FD02: 'RMU1',
+    EP_FD01: '11KV LUMAX',         EP_FD02: 'RMU1',
     ML_FD01: '11KV BHOSALE NAGAR', ML_FD02: '11KV KUBERA',
     ML_FD03: '11KV MALWADI HADAPSAR'
   };
@@ -423,17 +625,61 @@ function renderForecastChart(forecastData) {
   } else {
     pfRow.style.display = 'none';
   }
+
+  // Data table + enable export
+  renderDataTable(forecastData);
+  document.getElementById('exportBtn').disabled = false;
+}
+
+// ── Export CSV ────────────────────────────────────────────
+function exportCSV() {
+  if (!_lastForecastData) return;
+  const rows = buildTableRows(_lastForecastData);
+  const meta = _lastForecastData;
+  const sub  = _fcFilters.substation || 'ALL';
+  const fdr  = _fcFilters.feeder     || 'ALL';
+  const ts   = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const headerLines = [
+    `# NHITS ACTIVE LOAD FORECAST EXPORT`,
+    `# Generated: ${new Date().toISOString()}`,
+    `# Substation: ${sub}`,
+    `# Feeder: ${fdr}`,
+    `# Method: ${(meta.method || '').toUpperCase()}`,
+    `# Horizon: ${meta.horizon_minutes || 60} min`,
+    `# Last Run: ${meta.last_run || ''}`,
+    ``,
+  ];
+  const cols = ['Row', 'Timestamp', 'Type', 'Actual_MW', 'Forecast_MW', 'AbsError_MW', 'Error_Pct'];
+  const csvRows = rows.map((r, i) => [
+    i + 1,
+    r.ts.replace('T', ' ').slice(0, 19),
+    r.type,
+    r.actual   != null ? r.actual.toFixed(6)   : '',
+    r.forecast != null ? r.forecast.toFixed(6) : '',
+    r.absErr   != null ? r.absErr.toFixed(6)   : '',
+    r.errPct   != null ? r.errPct.toFixed(4)   : '',
+  ].join(','));
+  const csv  = [...headerLines, cols.join(','), ...csvRows].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `forecast_${sub}_${fdr}_${ts}.csv`;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
 }
 
 // ── Run forecast ─────────────────────────────────────────
 async function runForecast() {
-  const btn = document.getElementById('fcRunBtn');
+  const btn    = document.getElementById('fcRunBtn');
+  const expBtn = document.getElementById('exportBtn');
   btn.disabled = true;
   btn.textContent = '⟳ RUNNING…';
+  expBtn.disabled = true;
 
   const wrap = document.getElementById('forecastWrap');
   wrap.innerHTML = '<div class="loading"><div class="spinner"></div>FORECASTING…</div>';
   document.getElementById('perFeederRow').style.display = 'none';
+  document.getElementById('dataTableSection').style.display = 'none';
 
   const params = new URLSearchParams();
   if (_fcFilters.substation) params.set('substation', _fcFilters.substation);
@@ -447,6 +693,7 @@ async function runForecast() {
       throw new Error(err.detail || err.error || `HTTP ${r.status}`);
     }
     const data = await r.json();
+    _lastForecastData = data;
     renderForecastChart(data);
   } catch (e) {
     showErr('forecastWrap', 'Forecast failed: ' + e.message);

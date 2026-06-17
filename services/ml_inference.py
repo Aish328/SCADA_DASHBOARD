@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from services.data_loader import DataLoader
+from data_loader import DataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -295,20 +295,28 @@ def run_load_forecast(
 
     # ── Fallback: linear trend extrapolation ───────────────
     # Applied per-feeder if one is selected, else on the full df.
-    target_df = df[df["feeder"] == feeder] if feeder else df
-    recent    = target_df["active_load"].dropna().tail(288).values
-    if len(recent) < 2:
+    target_df = df[df["feeder"] == feeder] if feeder else df.copy()
+    target_df = target_df.sort_values("datetime")
+
+    recent_raw    = target_df["active_load"].dropna().tail(288).values
+    if len(recent_raw) < 2:
         return {"error": "Not enough data for linear fallback"}
+    print(recent_raw)
+    MW_DIVISOR = 1000.0
+    recent_mw = recent_raw / MW_DIVISOR
 
     interval  = DataLoader.infer_interval()
     last_dt   = target_df["datetime"].max()
+    hist_tail = target_df.tail(60)
+    history_ds = [dt.isoformat() for dt in hist_tail["datetime"]]
+    history_mw = [round(float(v) / MW_DIVISOR, 4) for v in hist_tail["active_load"].fillna(0).values]
 
-    x         = np.arange(len(recent))
-    coeffs    = np.polyfit(x, recent, 1)
+    x         = np.arange(len(recent_mw))
+    coeffs    = np.polyfit(x, recent_mw, 1)
     trend_fn  = np.poly1d(coeffs)
-    future_x  = np.arange(len(recent), len(recent) + 20)
+    future_x  = np.arange(len(recent_mw), len(recent_mw) + 20)
     predicted = trend_fn(future_x)
-
+    predicted = np.clip(predicted, 0, None)  # no negative MW
     horizon_dts = [
         (last_dt + timedelta(minutes=interval * (i + 1))).isoformat()
         for i in range(20)
@@ -318,4 +326,10 @@ def run_load_forecast(
         "horizon":  horizon_dts,
         "values":   [round(float(v), 4) for v in predicted],
         "last_run": datetime.utcnow().isoformat(),
+        "history": {
+            "ds" : history_ds,
+            "mw" : history_mw,
+        },
+        "per_feeder" : {},
+        
     }

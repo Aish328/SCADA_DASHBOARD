@@ -1,27 +1,29 @@
 import pandas as pd
 from pathlib import Path
 from typing import Optional
+from database import engine
+from sqlalchemy import create_engine, text
+# DATA_PATH = Path(__file__).parent.parent / "data" / "data.csv"
+# XLSX_PATH = Path(__file__).parent.parent / "data" / "MAIIN_DATA.xlsx"
+# CSV_PATH  = Path(__file__).parent.parent / "data" / "MAIIN_DATA.csv"
 
-DATA_PATH = Path(__file__).parent.parent / "data" / "data.csv"
-XLSX_PATH = Path(__file__).parent.parent / "data" / "MAIIN_DATA.xlsx"
-CSV_PATH  = Path(__file__).parent.parent / "data" / "MAIIN_DATA.csv"
-
-print("DATA DIR:", DATA_PATH.parent)
+# print("DATA DIR:", DATA_PATH.parent)
 
 _df_cache: Optional[pd.DataFrame] = None
 
-VOLTAGE_HIGH = 10.98
-VOLTAGE_LOW  = 10.5
-CURRENT_HIGH = 100
-CURRENT_LOW  = 50
+VOLTAGE_HIGH = 95
+VOLTAGE_LOW  = 75
+CURRENT_HIGH = 11.1
+
+CURRENT_LOW  = 10.9
 DEFAULT_INTERVAL_MINUTES = 15
 
 
-def _find_data_file():
-    for p in [DATA_PATH, XLSX_PATH, CSV_PATH]:
-        if p.exists():
-            return p
-    return None
+# def _find_data_file():
+#     for p in [DATA_PATH, XLSX_PATH, CSV_PATH]:
+#         if p.exists():
+#             return p
+#     return None
 
 
 def _infer_interval_minutes(df: pd.DataFrame) -> float:
@@ -167,27 +169,14 @@ def _load() -> pd.DataFrame:
     global _df_cache
     if _df_cache is not None:
         return _df_cache.copy()
-
-    data_file = _find_data_file()
-    if data_file is None:
-        print("WARNING: No data file found. Using demo data.")
-        # Demo data: normal → surge → normal → dip
-        df = pd.DataFrame({
-            "substation": ["Demo-Sub"] * 10,
-            "feeder":     ["Demo-Feeder"] * 10,
-            "datetime":   pd.date_range(end=pd.Timestamp.now(), periods=10, freq="15min"),
-            "vry": [225,228,252,258,261,230,222,195,192,228],
-            "vyb": [224,227,251,256,259,229,221,196,193,227],
-            "vbr": [223,226,250,255,257,228,220,197,194,226],
-            "ir":  [78, 80, 82, 106,109, 83, 79, 47, 44, 81],
-            "iy":  [79, 81, 83, 104,107, 82, 78, 46, 43, 80],
-            "ib":  [77, 79, 81, 103,106, 81, 77, 45, 42, 79],
-        })
-    else:
-        print("Loading:", data_file)
-        df = (pd.read_excel(data_file)
-              if data_file.suffix.lower() in [".xlsx", ".xls"]
-              else pd.read_csv(data_file))
+    query = "SELECT * FROM test2_db"
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn)
+    # data_file = engine.connect().execute(text("SELECT * FROM test_db"))
+    
+    # df = (pd.read_sql(data_file, engine)
+    #         #   if data_file.suffix.lower() in [".xlsx", ".xls"]
+    #           else pd.read_csv(data_file))
 
     df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
 

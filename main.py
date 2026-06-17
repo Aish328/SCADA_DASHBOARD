@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
-
+from database import engine
 from sqlalchemy import create_engine, text
 import pandas as pd
 
@@ -12,11 +12,11 @@ from routes import kpi, filters, spikes, data, ml
 # =========================
 # PostgreSQL Connection
 # =========================
-DATABASE_URL = "postgresql://postgres:root@localhost:5432/scada_db"
+# DATABASE_URL = "postgresql://postgres:root@localhost:5432/scada_db"
 
-print("\n[INFO] Initializing database engine...")
+# print("\n[INFO] Initializing database engine...")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 # =========================
 # FastAPI App
@@ -86,7 +86,7 @@ def get_sensor_data():
     print("[DB] Fetching sensor_data from PostgreSQL...")
 
     try:
-        query = "SELECT * FROM sensor_data LIMIT 100"
+        query = engine.connect().execute(text("SELECT * FROM test_db"))
         df = pd.read_sql(query, engine)
 
         print(f"[DB SUCCESS] Fetched {len(df)} rows ✔")

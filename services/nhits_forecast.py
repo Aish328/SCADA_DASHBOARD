@@ -263,6 +263,10 @@ def run_nhits_forecast(
           .rename("y")
           .reset_index()
     )
+    hist_tail  = df.tail(60).copy()   # df is the full substation df passed in
+    hist_ds    = [dt.isoformat() for dt in hist_tail["datetime"]]
+    hist_mw    = [round(float(v) / 1000.0, 4)          # same MW_DIVISOR as your values
+              for v in hist_tail["active_load"].fillna(0).values]
 
     return {
         "method":          f"NHITS Global (sum of {len(fc_parts)} feeders)",
