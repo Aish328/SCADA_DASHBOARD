@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from data_loader import DataLoader
+from services.data_loader import DataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -301,22 +301,36 @@ def run_load_forecast(
     recent_raw    = target_df["active_load"].dropna().tail(288).values
     if len(recent_raw) < 2:
         return {"error": "Not enough data for linear fallback"}
+    print(type(recent_raw))
     print(recent_raw)
-    MW_DIVISOR = 1000.0
-    recent_mw = recent_raw / MW_DIVISOR
+    print(getattr(recent_raw, "shape", None))
+    # if (recent_raw > 100.0).any():
+    #     MW_DIVISOR = 1000.0
+    # else:
+    #     MW_DIVISOR = 1.0
+    # recent_mw = recent_raw / MW_DIVISOR 
+    recent_mw = recent_raw.astype(float)
 
     interval  = DataLoader.infer_interval()
+    
     last_dt   = target_df["datetime"].max()
     hist_tail = target_df.tail(60)
-    history_ds = [dt.isoformat() for dt in hist_tail["datetime"]]
-    history_mw = [round(float(v) / MW_DIVISOR, 4) for v in hist_tail["active_load"].fillna(0).values]
 
+    history_ds = [dt.isoformat() for dt in hist_tail["datetime"]]
+    history_raw = hist_tail["active_load"].fillna(0).values
+    history_mw = history_raw.astype(float)
+    # history_mw  = np.where(history_raw > 100.0, history_raw / 1000.0, history_raw)
+    history_mw = [round(float(v),4) for v in history_mw]
     x         = np.arange(len(recent_mw))
     coeffs    = np.polyfit(x, recent_mw, 1)
     trend_fn  = np.poly1d(coeffs)
     future_x  = np.arange(len(recent_mw), len(recent_mw) + 20)
     predicted = trend_fn(future_x)
-    predicted = np.clip(predicted, 0, None)  # no negative MW
+        
+    last_value = recent_mw[-1]
+    predicted = np.clip(predicted,
+                        0.5*last_value,
+                        1.5*last_value) # no negative MW
     horizon_dts = [
         (last_dt + timedelta(minutes=interval * (i + 1))).isoformat()
         for i in range(20)
@@ -330,6 +344,12 @@ def run_load_forecast(
             "ds" : history_ds,
             "mw" : history_mw,
         },
+        "forecast": {
+        "ds": horizon_dts,
+        "mw": [round(float(v),4) for v in predicted]
+        },
+        "error_analysis": [],
+        "method": "NHITS",
         "per_feeder" : {},
         
     }

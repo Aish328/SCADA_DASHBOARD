@@ -164,12 +164,29 @@ def _derive_kpis(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+def parse_active_load(x):
+    if pd.isna(x):
+        return None
 
+    s = str(x).strip().lower()
+
+    try:
+        if "mw" in s:
+            return float(s.replace("mw", "").strip())
+
+        elif "kw" in s:
+            return float(s.replace("kw", "").strip()) / 1000.0
+
+        else:
+            return float(s)
+    except:
+        return None
+    
 def _load() -> pd.DataFrame:
     global _df_cache
     if _df_cache is not None:
         return _df_cache.copy()
-    query = "SELECT * FROM test2_db"
+    query = "SELECT * FROM test3_db"
     with engine.connect() as conn:
         df = pd.read_sql(query, conn)
     # data_file = engine.connect().execute(text("SELECT * FROM test_db"))
@@ -195,6 +212,8 @@ def _load() -> pd.DataFrame:
         df[col] = df[col].astype(str).str.strip()
 
     for col in ["ir", "iy", "ib", "vry", "vyb", "vbr", "active_load", "active load"]:
+        if "active_load" in df.columns:
+            df["active_load"] = df["active_load"].apply(parse_active_load)
         if col in df.columns:
             df[col] = (
                 df[col].astype(str)
