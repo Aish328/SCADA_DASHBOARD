@@ -68,7 +68,7 @@ _model_lock  = threading.Lock()
 
 def _load_autoencoder(input_size: int):
     """Import here to avoid circular deps; model.py must be importable."""
-    from model import LSTMModel
+    from kpi_classifier.model import LSTMModel
     m = LSTMModel(input_size=input_size)
     m.load_state_dict(torch.load(AUTOENCODER_PATH, weights_only=True))
     m.eval()
@@ -76,7 +76,7 @@ def _load_autoencoder(input_size: int):
 
 
 def _load_classifier(input_size: int):
-    from classifier import LSTMClassifier
+    from kpi_classifier.classifier import LSTMClassifier
     m = LSTMClassifier(input_size=input_size)
     m.load_state_dict(torch.load(CLASSIFIER_PATH, weights_only=True))
     m.eval()
@@ -280,7 +280,7 @@ def run_load_forecast(
 
     # ── Global NHITS (pre-trained single bundle, no refit) ──
     try:
-        from services.nhits_forecast import run_nhits_forecast
+        from feeder_nhits_project.nhits_forecast import run_nhits_forecast
         return run_nhits_forecast(
             df,
             substation=substation,

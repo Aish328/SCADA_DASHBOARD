@@ -4,3 +4,4 @@ __pycache__/
 .env
 *.log
 lightning_logs/
+feeder_nhits_project/outputs/processed/all_feeders_processed.csv
