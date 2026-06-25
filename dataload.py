@@ -1,335 +1,213 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-import torch
+import re
 
 
-# ==========================================================
-# Fault Classes
-# ==========================================================
-FAULT_CLASSES = {
-    0: "Normal",
-    1: "Voltage Sag",
-    2: "Voltage Surge",
-    3: "Current Imbalance",
-    4: "Overload",
-    5: "Transformer Stress"
-}
+class FeederPreprocessor:
 
+    def __init__(self):
+        pass
 
-FAULT_COLORS = {
-    0: "#2ecc71",   # green
-    1: "#e74c3c",   # red
-    2: "#f39c12",   # orange
-    3: "#3498db",   # blue
-    4: "#9b59b6",   # purple
-    5: "#c0392b"    # dark red
-}
+    @staticmethod
+    def extract_numeric(x):
+        """Extract numeric value from strings like '11.2 kV', '863 kW'."""
+        if pd.isna(x):
+            return np.nan
 
+        nums = re.findall(r'[-+]?\d*\.?\d+', str(x))
+        return float(nums[0]) if nums else np.nan
 
-# ==========================================================
-# Fault Thresholds (scaled values)
-# ==========================================================
+    @staticmethod
+    def convert_load_to_mw(val):
+        """
+        Convert Active Load to MW.
+        Supports:
+        875 kW
+        1.2 MW
+        """
 
-# Voltage thresholds
-# Only trigger at extreme voltage levels
-V_SAG_LIMIT = 0.25
-V_SURGE_LIMIT = 0.75
+        if pd.isna(val):
+            return np.nan
 
-# Current imbalance threshold
-IMBAL_THRESHOLD = 0.04
+        val_str = str(val)
 
-# Load thresholds
-OVERLOAD_LIMIT = 0.70
+        num = FeederPreprocessor.extract_numeric(val_str)
 
-# Transformer stress thresholds
-XFMR_LOAD_LIM = 0.50
-XFMR_CURR_LIM = 0.75
+        if "kw" in val_str.lower():
+            return num / 1000
 
-# Fault persistence
-# Require fault to exist for N consecutive samples
-FAULT_WINDOW = 5
+        return num
 
+    @staticmethod
+    def convert_voltage_to_kv(val):
+        """
+        Convert voltages to kV.
+        Supports:
+        11.2 kV
+        11200 V
+        """
 
-class SmartGridDataLoader:
-    def __init__(self, filepath):
-        self.filepath = filepath
-        self.df = None
-        self.scaler = None
+        if pd.isna(val):
+            return np.nan
 
-    # ======================================================
-    # Load CSV Data
-    # ======================================================
-    def load_data(self):
+        val_str = str(val)
+        num = FeederPreprocessor.extract_numeric(val_str)
 
-        self.df = pd.read_csv(
-            self.filepath,
-            sep=',',
-            encoding='latin1',
-            engine='python',
-            na_values=['?'],
-            on_bad_lines='skip'
+        if " v" in val_str.lower() and "kv" not in val_str.lower():
+            num = num / 1000
+
+        return num
+
+    def preprocess(self, file_path):
+
+        df = pd.read_csv(file_path)
+
+        # ----------------------
+        # Standardize columns
+        # ----------------------
+
+        df.columns = (
+            df.columns
+            .str.strip()
+            .str.upper()
+            .str.replace(" ", "_")
         )
 
-        # Remove extra spaces in column names
-        self.df.columns = self.df.columns.str.strip()
-
-        print("\nColumns in Dataset:\n")
-        print(self.df.columns.tolist())
-
-        return self.df
-
-    # ======================================================
-    # Data Cleaning + Feature Engineering
-    # ======================================================
-    def preprocess(self):
-
-        # Convert Time column to datetime
-        self.df['Time'] = pd.to_datetime(
-            self.df['Time'],
-            errors='coerce'
+        # Find feeder column
+        feeder_col = next(
+            col for col in df.columns
+            if "FEEDER" in col and "CODE" not in col
         )
 
-        # Remove invalid timestamps
-        self.df = self.df.dropna(subset=['Time'])
+        # Time column
+        time_col = next(
+            col for col in df.columns
+            if "TIME" in col
+        )
 
-        # Set Time as index for time-series operations
-        self.df.set_index('Time', inplace=True)
+        # Parse datetime
+        df[time_col] = pd.to_datetime(
+            df[time_col],
+            errors="coerce"
+        )
 
-        features = [
-            'IR',
-            'IY',
-            'IB',
-            'VRY',
-            'VYB',
-            'VBR',
-            'Active Load'
+        # ----------------------
+        # Current columns
+        # ----------------------
+
+        current_cols = ["IR", "IY", "IB"]
+
+        for col in current_cols:
+            df[col] = df[col].apply(self.extract_numeric)
+
+        # ----------------------
+        # Voltage columns
+        # ----------------------
+
+        voltage_cols = ["VRY", "VYB", "VBR"]
+
+        for col in voltage_cols:
+            df[col] = df[col].apply(self.convert_voltage_to_kv)
+
+        # Average voltage
+        df["AVG_VOLTAGE_KV"] = df[voltage_cols].mean(axis=1)
+
+        # ----------------------
+        # Active Load
+        # ----------------------
+
+        load_col = next(
+            col for col in df.columns
+            if "ACTIVE" in col
+        )
+
+        df["ACTIVE_LOAD_MW"] = df[load_col].apply(
+            self.convert_load_to_mw
+        )
+
+        # ----------------------
+        # Remove negative values
+        # ----------------------
+
+        numeric_cols = [
+            "IR",
+            "IY",
+            "IB",
+            "VRY",
+            "VYB",
+            "VBR",
+            "AVG_VOLTAGE_KV",
+            "ACTIVE_LOAD_MW"
         ]
 
-        # --------------------------------------------------
-        # Clean numeric values
-        # Extract only numeric values from strings
-        # Example: "45A" -> 45
-        # --------------------------------------------------
-        for col in features:
+        for col in numeric_cols:
+            df.loc[df[col] < 0, col] = np.nan
 
-            self.df[col] = (
-                self.df[col]
-                .astype(str)
-                .str.extract(r'([-+]?\d*\.?\d+)')[0]
-                .astype(float)
-            )
+        df.dropna(inplace=True)
 
-        # Forward fill missing values
-        self.df = self.df.ffill()
+        # =====================================================
+        # ADAPTIVE SAG / SURGE THRESHOLDS
+        # =====================================================
 
-        # --------------------------------------------------
-        # Clip extreme outliers (1% - 99%)
-        # Helps model stability
-        # --------------------------------------------------
-        for col in features:
+        # Compute nominal voltage per feeder
+        feeder_nominal = (
+            df.groupby(feeder_col)["AVG_VOLTAGE_KV"]
+            .median()
+            .to_dict()
+        )
 
-            q1 = self.df[col].quantile(0.01)
-            q99 = self.df[col].quantile(0.99)
+        df["NOMINAL_VOLTAGE"] = df[feeder_col].map(
+            feeder_nominal
+        )
 
-            self.df[col] = self.df[col].clip(q1, q99)
+        # IEEE-like adaptive thresholds
+        df["SAG_THRESHOLD"] = (
+            0.90 * df["NOMINAL_VOLTAGE"]
+        )
 
-        # --------------------------------------------------
-        # Add Time Features
-        # --------------------------------------------------
-        self.df['hour'] = self.df.index.hour
-        self.df['day'] = self.df.index.dayofweek
+        df["SURGE_THRESHOLD"] = (
+            1.10 * df["NOMINAL_VOLTAGE"]
+        )
 
-        return self.df
-
-    # ======================================================
-    # Feature Scaling
-    # ======================================================
-    def scale_data(self):
-
-        features = [
-            'IR',
-            'IY',
-            'IB',
-            'VRY',
-            'VYB',
-            'VBR',
-            'Active Load',
-            'hour',
-            'day'
+        # Voltage state
+        conditions = [
+            df["AVG_VOLTAGE_KV"] < df["SAG_THRESHOLD"],
+            df["AVG_VOLTAGE_KV"] > df["SURGE_THRESHOLD"]
         ]
 
-        self.scaler = MinMaxScaler()
+        choices = [
+            "Voltage Sag",
+            "Voltage Surge"
+        ]
 
-        scaled = self.scaler.fit_transform(
-            self.df[features]
+        df["VOLTAGE_STATUS"] = np.select(
+            conditions,
+            choices,
+            default="Normal"
         )
 
-        return scaled
+        # ----------------------
+        # Current imbalance
+        # ----------------------
 
-    # ======================================================
-    # Generate Fault Labels
-    # ======================================================
-    def generate_fault_labels(self, data):
-
-        labels = np.zeros(len(data), dtype=np.int64)
-
-        # ---------------------------------------------
-        # Mean voltage
-        # Prevents phase oscillation misfires
-        # ---------------------------------------------
-        voltage_mean = (
-            data[:, 3] +
-            data[:, 4] +
-            data[:, 5]
-        ) / 3
-
-        # ---------------------------------------------
-        # Smooth voltage signal
-        # Helps reduce square-wave quantization issue
-        # ---------------------------------------------
-        voltage_smooth = pd.Series(
-            voltage_mean
-        ).rolling(
-            window=5,
-            center=True,
-            min_periods=1
-        ).mean()
-
-        # ---------------------------------------------
-        # Create fault masks
-        # ---------------------------------------------
-        surge_mask = (
-            voltage_smooth > V_SURGE_LIMIT
+        df["CURRENT_IMBALANCE"] = (
+            df[current_cols].max(axis=1)
+            - df[current_cols].min(axis=1)
         )
 
-        sag_mask = (
-            voltage_smooth < V_SAG_LIMIT
-        )
+        # ----------------------
+        # Calendar features
+        # ----------------------
 
-        # ---------------------------------------------
-        # Persistence logic
-        # Fault must exist for N samples
-        # ---------------------------------------------
-        surge_fault = (
-            surge_mask
-            .rolling(FAULT_WINDOW)
-            .sum() >= FAULT_WINDOW
-        )
+        df["HOUR"] = df[time_col].dt.hour
+        df["DAY"] = df[time_col].dt.day
+        df["MONTH"] = df[time_col].dt.month
+        df["DAY_OF_WEEK"] = df[time_col].dt.dayofweek
 
-        sag_fault = (
-            sag_mask
-            .rolling(FAULT_WINDOW)
-            .sum() >= FAULT_WINDOW
-        )
+        return df
 
-        # ---------------------------------------------
-        # Label generation
-        # ---------------------------------------------
-        for i in range(len(data)):
 
-            IR = data[i, 0]
-            IY = data[i, 1]
-            IB = data[i, 2]
-            LOAD = data[i, 6]
+# ==================================================
+# Usage
+# ==================================================
 
-            # Mean phase current
-            current_mean = (IR + IY + IB) / 3
-
-            # Max deviation from mean
-            imbalance = max(
-                abs(IR - current_mean),
-                abs(IY - current_mean),
-                abs(IB - current_mean)
-            )
-
-            # -----------------------------------------
-            # Priority Order Matters
-            # -----------------------------------------
-
-            # Voltage faults
-            if sag_fault.iloc[i]:
-                labels[i] = 1
-
-            elif surge_fault.iloc[i]:
-                labels[i] = 2
-
-            # Current imbalance
-            elif imbalance > IMBAL_THRESHOLD:
-                labels[i] = 3
-
-            # Transformer stress
-            # Must come BEFORE overload
-            elif (
-                LOAD > XFMR_LOAD_LIM
-                and (
-                    IR > XFMR_CURR_LIM
-                    or IY > XFMR_CURR_LIM
-                    or IB > XFMR_CURR_LIM
-                )
-            ):
-                labels[i] = 5
-
-            # Overload
-            elif LOAD > OVERLOAD_LIMIT:
-                labels[i] = 4
-
-        return labels
-
-    # ======================================================
-    # Create Sequences
-    # ======================================================
-    def create_sequences(
-        self,
-        data,
-        labels,
-        seq_length=48
-    ):
-
-        X = []
-        y = []
-
-        for i in range(len(data) - seq_length):
-
-            # Input sequence
-            X.append(
-                data[i:i + seq_length]
-            )
-
-            # Label at sequence end
-            y.append(
-                labels[i + seq_length]
-            )
-
-        return np.array(X), np.array(y)
-
-    # ======================================================
-    # Main Pipeline
-    # ======================================================
-    def get_processed_data(
-        self,
-        seq_length=48
-    ):
-
-        self.load_data()
-
-        self.preprocess()
-
-        scaled_data = self.scale_data()
-
-        labels = self.generate_fault_labels(
-            scaled_data
-        )
-
-        X, _ = self.create_sequences(
-            scaled_data,
-            labels,
-            seq_length
-        )
-
-        X = torch.tensor(
-            X,
-            dtype=torch.float32
-        )
-
-        return X

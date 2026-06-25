@@ -1,0 +1,8 @@
+{
+  "uid": "EP_FD03",
+  "rows": 14400,
+  "train_rows": 10080,
+  "val_rows": 2160,
+  "test_rows": 2160,
+  "training_seconds": 48.8
+}

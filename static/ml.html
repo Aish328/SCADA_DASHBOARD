@@ -246,6 +246,7 @@
       <button class="fc-run-btn" id="fcRunBtn" onclick="runForecast()">⚡ FORECAST</button>
       <button class="export-btn" id="exportBtn" onclick="exportCSV()" disabled>↓ EXPORT CSV</button>
       <div class="fc-meta">
+        <span>MODEL: <span class="fc-meta-val" id="fcModel">—</span></span>
         <span>METHOD: <span class="fc-meta-val" id="fcMethod">—</span></span>
         <span>HORIZON: <span class="fc-meta-val" id="fcHorizon">60 MIN</span></span>
         <span>LAST RUN: <span class="fc-meta-val" id="fcLastRun">—</span></span>
@@ -354,6 +355,34 @@ let _fcFiltersData = null;
 // Holds last API response — used by exportCSV()
 let _lastForecastData = null;
 
+// Feeder display name → trained model ID mapping (mirrors nhits_forecast.py)
+const FEEDER_ID_MAP = {
+  '11KV BHOSALE NAGAR':    'EP_FD01',
+  '11KV KUBERA':           'EP_FD02',
+  'RMU1':                  'ML_FD01',
+  '11KV LUMAX':            'ML_FD02',
+  '11KV MALWADI HADAPSAR': 'ML_FD03',
+};
+
+function resolveFeederModelId(feederName) {
+  return FEEDER_ID_MAP[feederName] || null;
+}
+
+function updateModelDisplay() {
+  const modelEl = document.getElementById('fcModel');
+  if (!modelEl) return;
+  if (!_fcFilters.feeder) {
+    modelEl.textContent = 'NHITS GLOBAL (Multi-feeder)';
+  } else {
+    const modelId = resolveFeederModelId(_fcFilters.feeder);
+    if (modelId) {
+      modelEl.textContent = 'NHITS ' + modelId;
+    } else {
+      modelEl.textContent = 'NO MODEL';
+    }
+  }
+}
+
 async function initForecastFilters() {
   try {
     const r = await fetch('/filters/');
@@ -364,6 +393,11 @@ async function initForecastFilters() {
   }
   const subSel = document.getElementById('fcSub');
   const fdSel  = document.getElementById('fcFeeder');
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const querySub = urlParams.get('substation');
+  const queryFdr = urlParams.get('feeder');
+  const autoRun  = urlParams.get('auto') !== 'false';
 
   (_fcFiltersData.substations || []).forEach(s => {
     const o = document.createElement('option');
@@ -380,15 +414,34 @@ async function initForecastFilters() {
       list.map(f => `<option value="${f}">${f}</option>`).join('');
     _fcFilters.feeder = null;
   };
+
+  if (querySub && _fcFiltersData.substations.includes(querySub)) {
+    _fcFilters.substation = querySub;
+    subSel.value = querySub;
+  }
+
   fillFeeders();
+
+  if (queryFdr && Array.from(fdSel.options).some(o => o.value === queryFdr)) {
+    _fcFilters.feeder = queryFdr;
+    fdSel.value = queryFdr;
+  }
 
   subSel.addEventListener('change', () => {
     _fcFilters.substation = subSel.value || null;
     fillFeeders();
+    updateModelDisplay();
   });
   fdSel.addEventListener('change', () => {
     _fcFilters.feeder = fdSel.value || null;
+    updateModelDisplay();
   });
+
+  updateModelDisplay();
+
+  if (autoRun && (querySub || queryFdr)) {
+    setTimeout(() => runForecast(), 100);
+  }
 }
 
 // ── Error helper ─────────────────────────────────────────
@@ -485,6 +538,12 @@ function renderForecastChart(forecastData) {
   if (!forecastData || forecastData.error) {
     showErr('forecastWrap', forecastData?.error || 'Forecast unavailable.');
     return;
+  }
+
+  // Display model ID from API response (per-feeder model or global)
+  const modelIdEl = document.getElementById('fcModel');
+  if (modelIdEl && forecastData.model_id) {
+    modelIdEl.textContent = forecastData.model_id;
   }
 
   document.getElementById('fcMethod').textContent =

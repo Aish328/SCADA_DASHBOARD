@@ -11,11 +11,11 @@ from sqlalchemy import create_engine, text
 
 _df_cache: Optional[pd.DataFrame] = None
 
-VOLTAGE_HIGH = 95
-VOLTAGE_LOW  = 75
-CURRENT_HIGH = 11.1
+VOLTAGE_HIGH = 11
+VOLTAGE_LOW  = 10
+CURRENT_HIGH = 75
 
-CURRENT_LOW  = 10.9
+CURRENT_LOW  = 72
 DEFAULT_INTERVAL_MINUTES = 15
 
 
@@ -186,7 +186,7 @@ def _load() -> pd.DataFrame:
     global _df_cache
     if _df_cache is not None:
         return _df_cache.copy()
-    query = "SELECT * FROM test3_db"
+    query = "SELECT * FROM scada_db"
     with engine.connect() as conn:
         df = pd.read_sql(query, conn)
     # data_file = engine.connect().execute(text("SELECT * FROM test_db"))

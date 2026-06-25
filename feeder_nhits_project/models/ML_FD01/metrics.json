@@ -1,0 +1,8 @@
+{
+  "uid": "ML_FD01",
+  "rows": 83083,
+  "train_rows": 58159,
+  "val_rows": 12462,
+  "test_rows": 12462,
+  "training_seconds": 65.38
+}

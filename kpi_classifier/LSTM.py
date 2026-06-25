@@ -1,7 +1,7 @@
 import torch
 print(torch.__version__)
-from pred_proj.dataload import *
-from pred_proj.model import *
+from dataload import *
+from model import *
 import torch.nn as nn 
 
 class LSTMModel(nn.Module):

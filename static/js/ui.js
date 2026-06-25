@@ -52,6 +52,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const allPill = _pill("All", true, async () => {
       _activatePill(allPill);
       currentFilters.feeder = null;
+      updateMlLink();
       await updateDashboard(substation, null);
     });
     feederPills.appendChild(allPill);
@@ -59,11 +60,23 @@ document.addEventListener("DOMContentLoaded", async () => {
       const pill = _pill(feeder, false, async () => {
         _activatePill(pill);
         currentFilters.feeder = feeder;
+        updateMlLink();
         await updateDashboard(substation, feeder);
       });
       feederPills.appendChild(pill);
     });
     currentFilters.feeder = null;
+    updateMlLink();
+  }
+
+  function updateMlLink() {
+    const mlLink = document.getElementById('mlLink');
+    if (!mlLink) return;
+    const params = new URLSearchParams();
+    if (currentFilters.substation) params.set('substation', currentFilters.substation);
+    if (currentFilters.feeder)     params.set('feeder',     currentFilters.feeder);
+    params.set('auto', 'true');
+    mlLink.href = '/ml' + (params.toString() ? '?' + params.toString() : '');
   }
 
   function _pill(label, active, onClick) {

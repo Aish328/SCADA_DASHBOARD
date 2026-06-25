@@ -75,7 +75,7 @@ def get_sensor_data():
     print("[DB] Fetching sensor_data from PostgreSQL...")
 
     try:
-        query = engine.connect().execute(text("SELECT * FROM test3_db"))
+        query = engine.connect().execute(text("SELECT * FROM scada_db"))
         df = pd.read_sql(query, engine)
 
         print(f"[DB SUCCESS] Fetched {len(df)} rows ✔")
@@ -89,4 +89,4 @@ def get_sensor_data():
 @app.get("/ml")
 def ml_page():
     print("[REQUEST] GET /ml")
-    return FileResponse("static/ml.html")
+    return FileResponse(static_dir / "ml.html")

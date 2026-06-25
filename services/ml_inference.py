@@ -257,20 +257,18 @@ def run_load_forecast(
     feeder: Optional[str] = None,
 ) -> dict:
     """
-    Global NHITS forecast (next 1 hour, 20 × 3-min steps, MW).
+    Per-feeder NHITS forecast (next 1 hour, 20 × 3-min steps, MW).
 
-    Single feeder selected  → that feeder's series from the global model.
+    Primary: Uses individual trained per-feeder models for maximum accuracy.
+    Fallback: Global NHITS model if per-feeder models unavailable.
+    Final fallback: Linear extrapolation if no NHITS available.
+
+    Single feeder selected  → that feeder's dedicated model.
     feeder is None / "All"  → per-feeder forecasts summed step-wise.
 
-    DataLoader is queried WITHOUT feeder filter so the global model
-    always receives data for all feeders (needed for "All" mode).
-    The feeder parameter is forwarded to run_nhits_forecast() which
-    does the per-feeder routing internally.
-
-    Falls back to linear extrapolation if the NHITS bundle is not found.
+    DataLoader is queried WITHOUT feeder filter to provide all feeders'
+    data to the inference engine for proper routing.
     """
-    # Load data: apply substation filter but NOT feeder filter here —
-    # run_nhits_forecast() handles per-feeder selection internally.
     df = DataLoader.get_all_data()
     df = DataLoader.filter_data(df, substation, feeder=None)
     df = df.sort_values("datetime")
@@ -278,19 +276,35 @@ def run_load_forecast(
     if "active_load" not in df.columns or len(df) < 50:
         return {"error": "Insufficient data for forecast"}
 
-    # ── Global NHITS (pre-trained single bundle, no refit) ──
+    # ── Try per-feeder models first (highest accuracy) ──
+    try:
+        from feeder_nhits_project.per_feeder_forecast import run_per_feeder_forecast
+        result = run_per_feeder_forecast(
+            df,
+            substation=substation,
+            feeder=feeder,
+        )
+        if "error" not in result:
+            logger.info("Per-feeder forecast succeeded")
+            return result
+        logger.warning("Per-feeder forecast returned error, trying global model: %s", result.get("error"))
+    except Exception as e:
+        logger.warning("Per-feeder forecast failed: %s", e)
+        logger.debug(traceback.format_exc())
+
+    # ── Fallback: Global NHITS bundle ──
     try:
         from feeder_nhits_project.nhits_forecast import run_nhits_forecast
+        logger.info("Attempting global NHITS model")
         return run_nhits_forecast(
             df,
             substation=substation,
-            feeder=feeder,          # None = all feeders summed
+            feeder=feeder,
         )
     except FileNotFoundError as e:
-        logger.error("NHITS bundle missing: %s", e)
-        return {"error": str(e)}
+        logger.error("Global NHITS bundle missing: %s", e)
     except Exception as e:
-        logger.warning("NHITS forecast failed, falling back to linear: %s", e)
+        logger.warning("Global NHITS forecast failed: %s", e)
         logger.debug(traceback.format_exc())
 
     # ── Fallback: linear trend extrapolation ───────────────
